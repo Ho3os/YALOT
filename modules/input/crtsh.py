@@ -10,18 +10,17 @@ from  utils.applogger import func_call_logger
 from utils import datautils
 import logging
 
-#todo find a way to merge domains from both columns
 
-class Certsh(BaseDataSources):
+class Crtsh(BaseDataSources):
     """description of class"""
-    def __init__(self,db,scope, name = "crtsh", api_key = '', timethreshold_refresh_in_days=365):
+    def __init__(self, general_handlers, name = "crtsh", api_key = '', timethreshold_refresh_in_days=365):
         self.column_mapping = {
             'id': ('INTEGER PRIMARY KEY', 'id','meta'),
             'time_created': ('TEXT', '','meta'),
             'time_modified': ('TEXT', '','meta'),
             'scope_status': ('TEXT', '','meta'),
             'domain': ('TEXT', 'primary',''),
-            'cert_issuer_ca_id': ('INTEGER', '',''),
+            'cert_issuer_ca_id': ('TEXT', '',''),
             'cert_issuer': ('TEXT', 'secondary',''),
             'name_value': ('TEXT', '',''),
             'entry_timestamp': ('TEXT', '',''),
@@ -30,12 +29,11 @@ class Certsh(BaseDataSources):
             'serial_number': ('TEXT', '',''),
             'crtsh_id': ('TEXT', '',''),
         }
-        super().__init__(db, scope, name, self.column_mapping)
+        super().__init__(general_handlers, name, self.column_mapping)
         self.api_prot = "https://"
         self.BASE_URL = "crt.sh/"
         self.URL_IDENTITY = "?output=json&q="
         self.api = api_key
-        self.timethreshold_refresh_in_days = timethreshold_refresh_in_days  # not in use
         
 
     @func_call_logger(log_level=logging.INFO)
@@ -59,17 +57,13 @@ class Certsh(BaseDataSources):
     #time is missing # AND time_modified < ?
     def search_based_on_scope(self,timethreshold_refresh_in_days=365):
         for scope_item in self.scope.get_scope("Domain"):
-            cursor = self.db.conn.cursor()
-            cursor.execute('''
+            row = self.db.execute_sql_fetchone('''
                 SELECT domain, time_modified FROM crtsh WHERE domain LIKE  ? 
             ''', ('%' + scope_item['scope_value'],))
-            row = cursor.fetchone()
             if not row:
                 resp = self.search_domain(scope_item['scope_value'])
                 if resp:
                     self.insert_input_data(resp)
-            self.db.conn.commit()
-            cursor.close()
         self.update_collection()
 
    
@@ -79,21 +73,48 @@ class Certsh(BaseDataSources):
         return resp
 
 
-    def safe_request(self,url):
+    def old_safe_request(self,url):
         headers = {
             'User-Agent': 'YourCustomUserAgent/1.0'
         }
-        if datautils.DEBUG:
+        if self.config["CACHING"]:
             response = datautils.read_cache_url(url,self.name)
             if response:
                 return response
         try:
             response = requests.get(url,headers=headers)
             response.raise_for_status()
-            if datautils.DEBUG:
+            if self.config["CACHING"]:
                 parsed_url = urlparse(url)
                 file_name = os.path.basename(parsed_url.query.split('=')[-1])
                 datautils.write_cache_url(file_name, self.name,response)
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            app_logger.error(f"Request error: {e}")
+            return None
+        except Exception as e:
+            app_logger.error(f"Error: {e}")
+            return None
+        
+
+    def safe_request(self, url):
+        headers = {
+            'User-Agent': 'YourCustomUserAgent/1.0'
+        }
+        if self.config["CACHING"]:
+            parsed_url = urlparse(url)
+            query = os.path.basename(parsed_url.query.split('=')[-1])
+            identifier = self.cache_db._generate_identifier(query, self.name)
+            cached_response = self.cache_db.get(identifier)
+            if cached_response:
+                return cached_response['value']
+
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+
+            if self.config["CACHING"]:
+                self.cache_db.set(identifier, response.text)
             return response.json()
         except requests.exceptions.RequestException as e:
             app_logger.error(f"Request error: {e}")
@@ -121,7 +142,7 @@ class Certsh(BaseDataSources):
         base_insertion_data = {
             'time_created': time_now,
             'time_modified': time_now,
-            'scope_status': 'in',
+            'scope_status': 'TBD',
         }
         result = []
         for json_obj in json_objs:
@@ -140,69 +161,34 @@ class Certsh(BaseDataSources):
     
 
 
-
-
-
-
     '''
     Overwritten to address MAX(certsh_id) to keep only one entry in select input
     Overwrite if domain does not exists or if secoundary values of primary group have a NULL
     '''
     def _get_update_meta_data_query_for_insert_into_output_data(self,target_table, meta_data):
-        select_query_same = f"""SELECT id, t1tm, t2tm, OSINTsource             
-            FROM ( 
-                SELECT t2.id, t1.time_modified AS t1tm, t2.time_modified AS t2tm, t2.OSINTsource,
-                    ROW_NUMBER() OVER (PARTITION BY {', '.join([f't1.{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY t1.crtsh_id DESC) AS RowNum
-                FROM {self.tablename} AS t1
-                LEFT JOIN {target_table} AS t2 ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
-                WHERE t2.id IS NOT NULL AND OSINTsource NOT LIKE '%{self.name}%'
-            )
-            WHERE RowNum = 1;
-        """
-        return select_query_same
+        parent_query = super()._get_update_meta_data_query_for_insert_into_output_data(target_table, meta_data)
+        return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
     
     '''
     Overwritten to address MAX(certsh_id) to keep only one entry in select input
     Overwrite if domain does not exists or if secoundary values of primary group have a NULL
     '''
-    def _get_find_subset_update_query_for_insert_into_output_data(self,target_table, meta_data):
-        secondary_values_key_conditions_different = ' OR '.join([f't2.{col} IS NULL' for col in self.column_mappings_rated_lists['secondary']])
-        insert_columns = ', '.join(f'{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-
-        select_query_different = f"""
-            SELECT {insert_columns}       
-            FROM ( 
-                SELECT {insert_columns_t1}, ROW_NUMBER() OVER (PARTITION BY {', '.join([f't1.{col}' for col in self.column_mappings_rated_lists['primary']])}  ORDER BY t1.crtsh_id DESC) AS RowNum
-                FROM {self.tablename} AS t1
-                LEFT JOIN {target_table} AS t2 ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
-                WHERE {secondary_values_key_conditions_different}
-            ) AS t1
-            WHERE RowNum = 1;
-        """
-        return select_query_different
+    def _get_find_subset_weak_update_query_for_insert_into_output_data(self,target_table, meta_data):
+        parent_query = super()._get_find_subset_weak_update_query_for_insert_into_output_data(target_table, meta_data)
+        return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
     
+    def _get_find_subset_strong_update_query_for_insert_into_output_data(self,target_table, meta_data):
+        parent_query = super()._get_find_subset_strong_update_query_for_insert_into_output_data(target_table, meta_data)
+        return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
+
+
     '''
     Overwritten to address MAX(certsh_id) to keep only one entry in select input
     Overwrite if domain does not exists or if secoundary values of primary group have a NULL
     '''
     def _get_insert_query_for_insert_into_output_data(self,target_table, meta_data):
-        secondary_values_key_conditions_different = ' OR '.join([f't2.{col} IS NULL' for col in self.column_mappings_rated_lists['secondary']])
-        insert_columns = ', '.join(f'{col}' for col in self.column_mappings_rated_lists['primary'] + self.column_mappings_rated_lists['secondary'])
-        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-
-        select_query_different = f"""
-            INSERT INTO {target_table} ({insert_columns + ", OSINTsource, " + ', '.join([f"'{col}'" for col in list(meta_data.keys())])})
-                SELECT {insert_columns_t1 +  ", '" + self.name +"', " + ', '.join([f"'{meta_data[col]}'" for col in list(meta_data.keys())])}    
-                FROM ( 
-                    SELECT {insert_columns_t1}, ROW_NUMBER() OVER (PARTITION BY {', '.join([f't1.{col}' for col in self.column_mappings_rated_lists['primary']])}  ORDER BY t1.crtsh_id DESC) AS RowNum
-                    FROM {self.tablename} AS t1
-                    LEFT JOIN {target_table} AS t2 ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
-                    WHERE {secondary_values_key_conditions_different}
-                ) AS t1
-                WHERE RowNum = 1;
-        """
-        return select_query_different
+        parent_query = super(). _get_insert_query_for_insert_into_output_data(target_table, meta_data)
+        return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
 
 
 

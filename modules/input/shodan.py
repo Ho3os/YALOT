@@ -18,7 +18,7 @@ import logging
 SUBNET_SEARCH = True
 
 class Shodan(BaseDataSources):
-    def __init__(self, db, scope, name="shodan", api_key="", timethreshold_refresh_in_days=365):
+    def __init__(self, general_handlers, name="shodan", api_key=""):
         self.column_mapping = {
             'id': ('INTEGER PRIMARY KEY', 'id', 'meta'),
             'time_created': ('TEXT', '', 'meta'),
@@ -43,7 +43,8 @@ class Shodan(BaseDataSources):
             'location_longitude': ('TEXT','', ''),
             'location_latitude': ('TEXT','', ''),
             'ip': ('TEXT','primary', ''),
-            'hostnames': ('TEXT','secondary', ''),
+            'dns_type': ('TEXT','primary', ''),
+            'dns_value': ('TEXT','primary', ''),
             'org': ('TEXT','secondary', ''),
             'os': ('TEXT','secondary', ''),
             'asn': ('TEXT','secondary', ''),
@@ -71,15 +72,14 @@ class Shodan(BaseDataSources):
             'fingerprint_sha256': ('TEXT','', ''),
             'fingerprint_sha1': ('TEXT','', ''),
             'pubkey_type': ('TEXT','', ''),
-            'pubkey_bits': ('INTEGER','', '')
+            'pubkey_bits': ('TEXT','', '')
         }
-        super().__init__(db, scope, name, self.column_mapping)
+        super().__init__(general_handlers, name, self.column_mapping)
         self.api_prot = "https://"
         self.BASE_URL = "api.shodan.io/shodan/"
         self.HOST_ENDPOINT = "host/"
         self.api_key = api_key
         self.api = shodan.Shodan(api_key)
-        self.timethreshold_refresh_in_days = timethreshold_refresh_in_days
  
     @func_call_logger(log_level=logging.INFO)
     def run(self):
@@ -100,11 +100,7 @@ class Shodan(BaseDataSources):
     def search_based_on_scope(self,timethreshold_refresh_in_days=365):
         for scope_item in self.scope.get_scope():
             if scope_item['scope_type'] == 'IP':
-                cursor = self.db.conn.cursor()
-                cursor.execute(''' SELECT ip, time_modified FROM shodan WHERE ip =  ? ''', (scope_item['scope_value'],))
-                row = cursor.fetchone()
-                self.db.conn.commit()
-                cursor.close()
+                row = self.db.execute_sql_fetchone(''' SELECT ip, time_modified FROM shodan WHERE ip =  ? ''', (scope_item['scope_value'],))
                 if not row:
                     self._search_host_by_ip_api(scope_item['scope_value'])
             if SUBNET_SEARCH:
@@ -160,37 +156,69 @@ class Shodan(BaseDataSources):
         #time.sleep(1)
         url = self.api_prot +  self.BASE_URL  + self.HOST_ENDPOINT + ip + '?key=' + self.api_key
         search_result =  self._safe_request(url)
+        if not search_result or search_result == 'error':
+            return
+        search_result = json.loads(search_result)
         if search_result:
             if 'data' in search_result: 
-                self.insert_input_data(json.loads(json.dumps(search_result['data'])))
+                self.insert_input_data(search_result.get('data',''))
 
-    def _safe_request(self,url):
-        if datautils.DEBUG:
+    def _old_safe_request(self,url):
+        if self.config["CACHING"]:
             response = datautils.read_cache_url(url,self.name)
             if response:
-                if response == datautils.CACHE_UNSUCCESSFUL_CONTENT_PATTERN:
+                if response == self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"):
                      return False
                 return response
         try:
             time.sleep(1) #because of API limitations
             response = requests.get(url)
             response.raise_for_status()
-            if datautils.DEBUG:
+            if self.config["CACHING"]:
                 parsed_url = urlparse(url)
                 file_name = os.path.basename(parsed_url.path.replace('/', '_').replace(':', '-'))
                 datautils.write_cache_url(file_name, self.name,response)
             return response.json()
         except requests.exceptions.RequestException as e:
-            if datautils.DEBUG:
+            if self.config["CACHING"]:
                 parsed_url = urlparse(url)
                 file_name = os.path.basename(parsed_url.path.replace('/', '_').replace(':', '-'))
-                datautils.write_cache_url(file_name, self.name,datautils.CACHE_UNSUCCESSFUL_CONTENT_PATTERN)
+                datautils.write_cache_url(file_name, self.name,self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"))
             print(f"Request error: {e}")
+            return None
+        
+    
+    def _safe_request(self, url):
+        if self.config["CACHING"]:
+            parsed_url = urlparse(url)
+            query = os.path.basename(parsed_url.path.replace('/', '_').replace(':', '-'))
+            identifier = self.cache_db._generate_identifier(query, self.name)
+            cached_response = self.cache_db.get(identifier)
+            if cached_response:
+                return cached_response['value']
+
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+
+            if self.config["CACHING"]:
+                self.cache_db.set(identifier,response.text)
+            return response.text
+        except requests.exceptions.RequestException as e:
+            if self.config["CACHING"]:
+                self.cache_db.set(identifier, self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"))
+            app_logger.error(f"Request error: {e}")
+            return None
+        except Exception as e:
+            app_logger.error(f"Error: {e}")
             return None
 
 
-
     def _get_json_api_values(self, json_obj):
+        if datautils.check_ip_version(json_obj.get('ip_str', '')) == "IPv4":
+            dns_ip_version = '1'
+        elif datautils.check_ip_version(json_obj.get('ip_str', '')) == "IPv6":
+            dns_ip_version = '28'
         return {
             'hash': json_obj.get('hash', 0),
             'opts': json.dumps(json_obj.get('opts', {})),
@@ -210,6 +238,8 @@ class Shodan(BaseDataSources):
             'port': json_obj.get('port', ''),
             'hostnames': json.dumps(json_obj.get('hostnames', [])),
             'ip': json_obj.get('ip_str', ''),
+            'dns_type': dns_ip_version,
+            'dns_value': json_obj.get('ip_str', ''),
             'org': json_obj.get('org', ''),
             'os': json_obj.get('os', ''),
             'asn': json_obj.get('asn', ''),
@@ -264,4 +294,4 @@ class Shodan(BaseDataSources):
         return result
        
     def condiction_select_for_subset_updates_input_into_output(self):
-        return "AND (dns_type = '1' OR dns_type IS NULL OR dns_type = '')"
+        return "AND (t2.dns_value = t1.ip AND (t2.dns_type = '1' OR t2.dns_type = '28') OR t2.dns_value IS NULL)"

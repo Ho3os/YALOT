@@ -5,8 +5,6 @@ import datetime
 import time
 from utils.instancemanager import InstanceManager
 from modules.input.basedatasources import BaseDataSources
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
 from utils import datautils
 import logging
 
@@ -17,9 +15,9 @@ import logging
 ####################################################################
 
 #Using this class is not opsec safe and will result in DNS queries being actively resolved at target infrastructure.
-class DNSresolver(BaseDataSources):
+class Dnsresolver(BaseDataSources):
     """description of class"""
-    def __init__(self,db, scope, name='dns_resolver', api_key="", timethreshold_refresh_in_days=365, dns_timeout=0, dns_resolver_ips=["8.8.8.8"]):
+    def __init__(self, general_handlers, name='dns_resolver', api_key="", dns_timeout=0, dns_resolver_ips=["8.8.8.8"]):
         self.column_mapping = {
             'id': ('INTEGER PRIMARY KEY', 'id', 'meta'),
             'time_created': ('TEXT', '', 'meta'),
@@ -30,11 +28,9 @@ class DNSresolver(BaseDataSources):
             'dns_value': ('TEXT', 'primary', ''),
             'resolver': ('TEXT', '', '')
         }
-        super().__init__(db, scope, name, self.column_mapping)
+        super().__init__(general_handlers, name, self.column_mapping)
         self.api = api_key
-        #self.cache_folder_name = "DNS"
         self.dns_resolver_ip = "8.8.8.8" #multiple resolvers are currently not supported
-        self.timethreshold_refresh_in_days = timethreshold_refresh_in_days  # not in use
         self.dns_timeout = dns_timeout
 
 
@@ -44,16 +40,12 @@ class DNSresolver(BaseDataSources):
         self.update_collection()
 
     def search_based_on_scope(self):
-        cursor = self.db.conn.cursor()
         for scope_item in self.scope.get_scope("Domain"):
-            cursor.execute('''
+            rows = self.db.execute_sql('''
             SELECT domain, time_modified FROM dns_resolver WHERE domain =  ? 
             ''', (scope_item['scope_value'],))
-            row = cursor.fetchall()
-            if not row:
+            if not rows:
                 self.resolve_handler(scope_item['scope_value'])
-            self.db.conn.commit()
-        cursor.close()
         self.update_collection()
         
 
@@ -72,9 +64,7 @@ class DNSresolver(BaseDataSources):
 
     '''Scope'''
     def scope_receive(self, message):
-        cursor = self.db.conn.cursor()
-        cursor.execute('''SELECT id, domain, dns_type, dns_value FROM dns_resolver''')
-        rows = cursor.fetchall()
+        rows = self.db.execute_sql('''SELECT id, domain, dns_type, dns_value FROM dns_resolver''')
         scope_data = self.scope.get_scope()
         for row in rows:
             row_id = row[0]
@@ -98,27 +88,22 @@ class DNSresolver(BaseDataSources):
                 self.deactivate_scope(row_id)
 
     def activate_scope(self, row_id):
-        cursor = self.db.conn.cursor()
-        cursor.execute('''UPDATE dns_resolver SET scope_status = 'in' WHERE id = ?''', (row_id,))
-        self.db.conn.commit()
-        cursor.close()
+        return self.db.execute_sql('''UPDATE dns_resolver SET scope_status = 'in' WHERE id = ?''', (row_id,))
 
     def deactivate_scope(self, row_id):
-        cursor = self.db.conn.cursor()
-        cursor.execute('''UPDATE dns_resolver SET scope_status = 'out' WHERE id = ?''', (row_id,))
-        self.db.conn.commit()
-        cursor.close()
+        return self.db.execute_sql('''UPDATE dns_resolver SET scope_status = 'out' WHERE id = ?''', (row_id,))
+
 
     '''Search'''
     def resolve_handler(self, domain):
-        if datautils.AGGRESSIVE_SCANS:
+        if self.config["AGGRESSIVE_SCANS"]:
             for ans in self.resolve_all_common_types(domain):
-                print("DNS " + domain + " " + ', '.join(map(str,ans)))
+                app_logger.debug("DNS " + domain + " " + ', '.join(map(str,ans)))
                 self.insert_input_data((domain,ans))
         else:
             status, response = self.resolve(domain)
             for ans in response:
-                print("DNS " +domain + " "+ ', '.join(map(str,ans)))
+                app_logger.debug("DNS " +domain + " "+ ', '.join(map(str,ans)))
                 self.insert_input_data((domain,ans))
         
 
@@ -132,19 +117,19 @@ class DNSresolver(BaseDataSources):
         for record_type in record_types:
             if domain_exists:
                 status, response = self.resolve(domain_name, record_type)
-                if 'does not exist' in response[0]:
+                if 'error' in response and  'does not exist' in response['error']:
                     domain_exists = False
             dns_answers.append((record_type, dns_type_mapping[record_type], status, response))
         return dns_answers
              
 
-    def resolve(self, domain_name, record="A"):
-        if datautils.DEBUG:
+    def old_resolve(self, domain_name, record="A"):
+        if self.config["CACHING"]:
             file_name = domain_name + "_" + record + ".cache"
             response_text  = datautils.read_cache_dns(file_name,self.name)
             app_logger.log(logging.DEBUG,f"DNS request from cache: " + str(response_text))
             if response_text:
-                if datautils.CACHE_UNSUCCESSFUL_CONTENT_PATTERN in response_text:
+                if self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error") in response_text:
                      return False, response_text
                 return True, response_text
         try:
@@ -152,19 +137,19 @@ class DNSresolver(BaseDataSources):
             app_logger.log(logging.DEBUG,f"DNS request live: " + str(response_text))
             time.sleep(self.dns_timeout)
             response_text = self.resolve_build_return(record, response)
-            if datautils.DEBUG:
+            if self.config["CACHING"]:
                 file_name = domain_name + "_" + record + ".cache"
                 datautils.write_cache_dns(file_name,self.name, response_text)
             return True, response_text
         except dns.resolver.NoAnswer:
-            if datautils.DEBUG:
+            if self.config["CACHING"]:
                 file_name = domain_name + "_" + record + ".cache"
-                datautils.write_cache_dns(file_name,self.name, [{datautils.CACHE_UNSUCCESSFUL_CONTENT_PATTERN: 'No answer found'}])
+                datautils.write_cache_dns(file_name,self.name, {self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"): 'No answer found'})
             return False, ["No answer found"]
         except dns.resolver.NXDOMAIN as e:
-            if datautils.DEBUG:
+            if self.config["CACHING"]:
                 file_name = domain_name + "_" + record + ".cache"
-                datautils.write_cache_dns(file_name,self.name, [{datautils.CACHE_UNSUCCESSFUL_CONTENT_PATTERN: f"{str(e)}"}])
+                datautils.write_cache_dns(file_name,self.name, {self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"): f"{str(e)}"})
             return False,[f"Domain does not exist {str(e)}"]
         except dns.exception.Timeout:
             return False,["DNS query timed out"]
@@ -172,6 +157,40 @@ class DNSresolver(BaseDataSources):
             return False, [f"DNS query failed: {e}"]
         except Exception as e:
             return False,[f"An error occurred: {str(e)}"]
+        
+
+    def resolve(self, domain_name, record="A"):
+        if self.config["CACHING"]:
+            identifier = self.cache_db._generate_identifier(domain_name+'_'+record, self.name)
+            cached_response = self.cache_db.get(identifier)
+            app_logger.log(logging.DEBUG,f"DNS request from cache: " + str(cached_response ))
+            if cached_response:
+                if self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error") in cached_response :
+                     return False, cached_response['value'] 
+                return True, cached_response['value'] 
+        try:
+            response = dns.resolver.query(domain_name, record)
+            app_logger.log(logging.DEBUG,f"DNS request live: " + str(response))
+            time.sleep(self.dns_timeout)
+            response_text = self.resolve_build_return(record, response)
+            if self.config["CACHING"]:
+                self.cache_db.set(identifier, response_text)
+            return True, response_text
+        except dns.resolver.NoAnswer:
+            if self.config["CACHING"]:
+                self.cache_db.set(identifier, {self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"): 'No answer found'})
+            return False, ["No answer found"]
+        except dns.resolver.NXDOMAIN as e:
+            if self.config["CACHING"]:
+                self.cache_db.set(identifier, {self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"): f"{str(e)}"})
+            return False,[f"{str(e)}"]
+        except dns.exception.Timeout:
+            return False,["DNS query timed out"]
+        except dns.exception.DNSException as e:
+            return False, [f"DNS query failed: {e}"]
+        except Exception as e:
+            return False,[f"An error occurred: {str(e)}"]
+        
 
     def resolve_build_return(self, record, response):
         if record == 'CNAME':
