@@ -9,7 +9,7 @@ from  utils.applogger import app_logger
 from  utils.applogger import func_call_logger
 from utils import datautils
 import logging
-
+from utils.metadata_analysis import db_metadata_analysis_module
 
 class Crtsh(BaseDataSources):
     """description of class"""
@@ -36,6 +36,7 @@ class Crtsh(BaseDataSources):
         self.api = api_key
         
 
+    @db_metadata_analysis_module()
     @func_call_logger(log_level=logging.INFO)
     def run(self):
         self.search_based_on_scope()
@@ -155,8 +156,6 @@ class Crtsh(BaseDataSources):
                 for domain in name_values:
                     insertion_data.update({'domain': str(domain)})
                     result.append(insertion_data.copy())
-            if 'pasx-exta' in name_values:
-                pass 
         return result
     
 

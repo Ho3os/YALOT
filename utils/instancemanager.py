@@ -31,3 +31,7 @@ class InstanceManager:
     @classmethod
     def get_output_instances(cls) -> Dict[str, Any]:
         return cls.output_instances.copy()
+    
+    @classmethod
+    def get_all_instances(cls) -> Dict[str, Any]:
+        return cls.output_instances.copy() | cls.input_instances.copy()

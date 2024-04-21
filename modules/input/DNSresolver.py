@@ -7,12 +7,7 @@ from utils.instancemanager import InstanceManager
 from modules.input.basedatasources import BaseDataSources
 from utils import datautils
 import logging
-
-####################################################################
-
-#TODO fix collection and caching is off
-
-####################################################################
+from utils.metadata_analysis import db_metadata_analysis_module
 
 #Using this class is not opsec safe and will result in DNS queries being actively resolved at target infrastructure.
 class Dnsresolver(BaseDataSources):
@@ -33,7 +28,8 @@ class Dnsresolver(BaseDataSources):
         self.dns_resolver_ip = "8.8.8.8" #multiple resolvers are currently not supported
         self.dns_timeout = dns_timeout
 
-
+    @db_metadata_analysis_module()
+    @func_call_logger(log_level=logging.INFO)
     def run(self):
         self.search_based_on_scope()
         self.search_based_on_collection()

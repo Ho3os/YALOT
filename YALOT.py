@@ -4,6 +4,7 @@ from modules.input import shodan
 from modules.input import columbus
 from modules.input import crtsh
 from modules.input import dnsresolver
+from modules.input import importData
 from modules.output import collection
 from utils import database
 from utils import tinydbcache
@@ -16,7 +17,7 @@ import sys
 import argparse
 import json
 import time
-
+from utils.metadata_analysis import db_metadata_analysis
 
 start_time = time.time()
 last_time = start_time
@@ -28,9 +29,20 @@ def run_output_modules(general_handlers):
     if datautils.is_output_module_config_present("collection"):
         collection.Collection(general_handlers)
 
+
+@db_metadata_analysis()
 def run_input_modules(general_handlers):
     config = datautils.get_config()
     log_elapsed_time('Init & scope')
+    if datautils.is_input_module_config_present("import"):
+        for data in config["modules"]["input"]["import"]["data_list"]:
+            import_handlers = general_handlers.copy() | {
+                "name": data["name"],
+                "data_model_path": data["data_model_path"],
+                "data_path": data["data_path"]
+            }
+            importData.ImportData(import_handlers).import_data()
+        log_elapsed_time('import') 
     if datautils.is_input_module_config_present("columbus"):
         #columbus.Columbus(general_handlers).run()
         log_elapsed_time('columbus')  
@@ -41,7 +53,7 @@ def run_input_modules(general_handlers):
         #dnsresolver.Dnsresolver(general_handlers).run()
         log_elapsed_time('dns_resolver')
     if datautils.is_input_module_config_present("shodan"):
-        shodan.Shodan(general_handlers,api_key=config["modules"]["input"]["shodan"]["API_KEY"]).run()
+        #shodan.Shodan(general_handlers,api_key=config["modules"]["input"]["shodan"]["API_KEY"]).run()
         log_elapsed_time('shodan')
     #censys.CensysHostsSearch(db,scope,api_id=censys_api_id,api_secret=censys_api_secret).run()
     #log_elapsed_time('censys')
@@ -114,7 +126,7 @@ def command_usage():
     if args.run:
         run_input_modules(general_handlers)
     if args.dump:
-        datautils.dump_all_tables_to_csv(db)
+        datautils.dump_all_module_tables_to_csv(db)
     db.conn.close()
     app_logger.info(f"YALOT")
 

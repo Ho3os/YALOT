@@ -11,6 +11,8 @@ import sys
 from utils.configmanager import ConfigManager
 
 
+
+
 class BaseDataSources(ABC):
     def __init__(self, general_handlers, name, column_mapping, target_table='collection'):
         self.name = name
@@ -287,24 +289,18 @@ class BaseDataSources(ABC):
             with self.db.conn:
                 insertion_data_objs = self.prepare_input_insertion_data(input_objs)
                 for obj in insertion_data_objs:
-                    # Replace None values with ''
                     obj = {k: '' if v is None else v for k, v in obj.items()}
                     select_dict = self._get_insertion_data_subset_by_column_mapping_filter(obj, self.column_mappings_rated_lists_without_meta)
                     insert_dict = self._reorder_insertion_data(obj, insertion_columns)
-
-                    # Check if the record exists
                     result = self.db.conn.execute(select_query, list(select_dict.values())).fetchone()
 
                     if not result:
-                        # If the record does not exist, perform the INSERT
                         self.db.conn.execute(insert_query, list(insert_dict.values()))
                     else:
-                        # If the record exists, perform the UPDATE
                         self.db.conn.execute(update_query, (obj.get("time_modified", ""), obj.get("scope_status", ""), result[0]))
 
         except sqlite3.Error as e:
             app_logger.error(f"Error: {e}")
-            # Rollback in case of an error
             self.db.conn.rollback()
 
         
@@ -438,9 +434,11 @@ class BaseDataSources(ABC):
             except sqlite3.Error as e:
                 app_logger.error(f"Error updating scope status: {e}")
 
+    
 
     @abstractmethod
     @func_call_logger(log_level=logging.INFO)
+    
     def run(self):
         """
         Abstract method to define running the module.
@@ -483,6 +481,16 @@ class BaseDataSources(ABC):
         Makes sure that besides the primary dataset a suited entry for completion is found
         """
         return None
+    
+    def create_db_metadata_analysis_struct(self):
+        """
+        Based on column_mapping and target_tables a struct for the decorator is created.
+        This function should only be called by the decorator.
+        """
+        return {"module_table_name": self.tablename,
+                "column_list": self.column_mappings_rated_lists['primary'],
+                "target_table_name": self.target_table}
+
 
 
 

@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from utils.applogger import app_logger, func_call_logger
 from utils.configmanager import ConfigManager
 from utils.database import OSINTDatabase
+import csv
+from utils.instancemanager import InstanceManager
 
 pattern: re.Pattern = re.compile(
     r'^(([a-zA-Z]{1})|([a-zA-Z]{1}[a-zA-Z]{1})|'
@@ -160,17 +162,90 @@ def dump_all_tables_to_csv(db: 'OSINTDatabase') -> None:
     tables: List[Tuple[str]] = cursor.fetchall()
     for table in tables:
         table_name: str = table[0]
-        csv_file: str = create_two_folder_dynamic_file_path('export', 'database_dumps', f'{datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")}_{table_name}.csv')
         cursor.execute(f"SELECT * FROM {table_name}")
         rows: List[Tuple[Any]] = cursor.fetchall()
-        with open(csv_file, 'w', encoding='utf-8', newline='') as csvfile:
-            # Write header
-            header: str = '-_-_-'.join([description[0] for description in cursor.description]) + '\n'
-            csvfile.write(header)
-            for row in rows:
-                row_str: str = '-_-_-'.join(map(str, row)).replace('\n', '<newl>') + '\n'
-                csvfile.write(row_str)
-    db.conn.close()
+        header = []
+        for description in cursor.description:
+            header.append(description[0])
+        csv_path, _ = create_dump_path(table_name),
+        write_csv(csv_path, header,rows)
+
+def create_dump_path(table_name):
+    csv_file: str = create_two_folder_dynamic_file_path('export', 'database_dumps', 
+                f'{datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")}_{table_name}.csv')
+    json_file: str = create_two_folder_dynamic_file_path('export', 'database_dumps', 
+                f'{datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")}_{table_name}_mapping.json')
+    return csv_file, json_file
+
+def create_header_from_keys(column_mapping):
+    return list(column_mapping)
+ 
+def dump_all_module_tables_to_csv(include_mapping_export=True) -> None:
+    instances = InstanceManager.get_all_instances()
+    for instance in instances.values():
+        dump_table_to_csv(instance)
+
+def dump_module_table(instance_name: Optional[str] = None,include_mapping_export=True) -> None:
+    if instance_name:
+        retrieved_instance = InstanceManager.get_input_instance(instance_name)
+        if not retrieved_instance:
+            retrieved_instance = InstanceManager.get_output_instance(instance_name)
+    if retrieved_instance: 
+        dump_table_to_csv(retrieved_instance)
+    else:
+        app_logger.error("Export error in dump_module_table: No instance {instance_name} found.")
+
+def dump_table_to_csv(instance):
+    cursor: sqlite3.Cursor = instance.db.conn.cursor()
+    cursor.execute(f"SELECT * FROM {instance.tablename};")
+    rows: List[Tuple[str]] = cursor.fetchall()
+    csv_file_path, mapping_file_path = create_dump_path(instance.tablename)
+    write_csv(csv_file_path,create_header_from_keys(instance.column_mapping),rows,instance)
+    write_json_mapping(mapping_file_path, instance)
+    
+
+
+def write_json_mapping(mapping_file_path, instance):
+    try:
+        directory = os.path.dirname(mapping_file_path)
+        if not os.path.exists(directory):
+            os.makedirs(directory)  
+        with open(mapping_file_path, 'w') as json_file:
+            dict_string = {
+                "name": instance.name,
+                "tablename": instance.tablename,
+                "column_mapping": instance.column_mapping
+            }
+            json_file.write(json.dumps(dict_string, indent=4))
+            app_logger.info(f"Data mapping specification of {instance.name} written to {mapping_file_path}.")
+    except FileNotFoundError:
+        app_logger.error(f"Error: The specified file or directory could not be found.")
+    except PermissionError:
+        app_logger.error(f"Error: Permission denied. Cannot write to the specified location.")
+    except OSError as e:
+        app_logger.error(f"OS error: {e}")
+    except Exception as e:
+        app_logger.error(f"An unexpected error occurred: {e}")
+
+def write_csv(csv_file_path, header, data_rows, instance):
+    try:
+        directory = os.path.dirname(csv_file_path)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        with open(csv_file_path, 'w', encoding='utf-8', newline='') as csvfile:
+            writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_ALL)
+            writer.writerow(header)
+            for row in data_rows:
+                writer.writerow(row)  
+        app_logger.info(f"Data from csv of {instance.name} written to {csv_file_path}.")
+    except FileNotFoundError:
+        app_logger.error(f"Error: The specified file or directory could not be found.")
+    except PermissionError:
+        app_logger.error(f"Error: Permission denied. Cannot write to the specified location.")
+    except OSError as e:
+        app_logger.error(f"OS error: {e}")
+    except Exception as e:
+        app_logger.error(f"An unexpected error occurred: {e}")
 
 @func_call_logger(log_level=logging.INFO)
 def create_path_if_not_exists(path):

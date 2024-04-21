@@ -14,6 +14,7 @@ from utils import datautils
 from  utils.applogger import app_logger
 from  utils.applogger import func_call_logger
 import logging
+from utils.metadata_analysis import db_metadata_analysis_module
 
 SUBNET_SEARCH = True
 
@@ -81,6 +82,8 @@ class Shodan(BaseDataSources):
         self.api_key = api_key
         self.api = shodan.Shodan(api_key)
  
+
+    @db_metadata_analysis_module()
     @func_call_logger(log_level=logging.INFO)
     def run(self):
         self.search_based_on_scope()
