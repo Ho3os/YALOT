@@ -1,18 +1,16 @@
+from modules.input.basedatasources import BaseDataSources
 import shodan
 from urllib.parse import urlparse
 import requests
 import datetime
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
 import json
 import os
 import time
 import ast
-from utils.instancemanager import InstanceManager
-from modules.input.basedatasources import BaseDataSources
-from utils import datautils
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
+from utils.instance_manager import InstanceManager
+from utils import data_utils
 import logging
 from utils.metadata_analysis import db_metadata_analysis_module
 
@@ -26,6 +24,10 @@ class Shodan(BaseDataSources):
             'time_modified': ('TEXT', '', 'meta'),
             'scope_status': ('TEXT', '', 'meta'),
             'domain': ('TEXT','primary', ''),
+            'dns_type': ('TEXT','primary', ''),
+            'dns_value': ('TEXT','primary', ''),
+            'ip': ('TEXT','primary', ''),
+            'port': ('TEXT','primary', ''),
             'hash': ('TEXT', '', ''),
             'opts': ('TEXT','', ''),
             '_timestamp': ('TEXT','', ''),
@@ -36,16 +38,14 @@ class Shodan(BaseDataSources):
             'shodan_options': ('TEXT','', ''),
             'shodan_module': ('TEXT','', ''),
             'shodan_crawler': ('TEXT','', ''),
-            'port': ('TEXT','primary', ''),
+            'tags': ('TEXT','secondary', ''),
+            'vulns': ('TEXT','secondary', ''),
             'hostnames': ('TEXT','secondary', ''),
             'location_country': ('TEXT','secondary', ''),
             'location_region': ('TEXT','', ''),
             'location_city': ('TEXT','secondary', ''),
             'location_longitude': ('TEXT','', ''),
             'location_latitude': ('TEXT','', ''),
-            'ip': ('TEXT','primary', ''),
-            'dns_type': ('TEXT','primary', ''),
-            'dns_value': ('TEXT','primary', ''),
             'org': ('TEXT','secondary', ''),
             'os': ('TEXT','secondary', ''),
             'asn': ('TEXT','secondary', ''),
@@ -88,14 +88,19 @@ class Shodan(BaseDataSources):
     def run(self):
         self.search_based_on_scope()
         self.search_based_on_collection()
+        self.scope_receive("redo in out")
         self.update_collection()
+        pass
 
 
     '''
     Receiver function from parent class, which is called if new data from an output table can be used to query new data. Make sure that the column corresponds to the correct primary value
     '''
     def receiver_search_by_primary_values(self,rows,originating_output_table_name):
-        result_set = set(row[2] for row in rows)
+        result_set = set()
+        for row in rows:
+            if row[1] == '1':
+                result_set.add(row[2])
         for result in result_set:
                 if result:
                     self._search_host_by_ip_api(result) 
@@ -108,10 +113,12 @@ class Shodan(BaseDataSources):
                     self._search_host_by_ip_api(scope_item['scope_value'])
             if SUBNET_SEARCH:
                 if scope_item['scope_type'] == 'Subnet':
-                    for ip in datautils.get_subnet_ips(scope_item['scope_value']):
-                         self._search_host_by_ip_api(str(ip))
+                    for ip in data_utils.get_subnet_ips(scope_item['scope_value']):
+                        row = self.db.execute_sql_fetchone(''' SELECT ip, time_modified FROM shodan WHERE ip =  ? ''', (str(ip),))
+                        if not row:
+                            self._search_host_by_ip_api(str(ip))
 
-        self.update_collection()
+        #self.update_collection()
 
     def update_collection(self):
         time_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -127,30 +134,60 @@ class Shodan(BaseDataSources):
     '''Scope'''
     @func_call_logger(log_level=logging.INFO)
     def scope_receive(self, message):
-        print("Shodan validates scope: "+message)
-        rows = self.execute_sql(f'''SELECT id, ip, domain FROM {self.tablename}''')
+        column_fields = ['domain','ip','dns_type', 'dns_value']
+        columns = ', '.join(f'{col}' for col in column_fields)
+        rows = self.db.execute_sql(f'''SELECT id, {columns} FROM {self.tablename}''')
         scope_data = self.scope.get_scope()
+        to_activate = set()
+        to_deactivate = set(range(len(rows)))
+
+        domains = self.summerize_ids(rows, 1)
+        ips = self.summerize_dns_ip_ids(rows, 3,4)
+
+        for scope_item in scope_data:
+            if scope_item['scope_type'] == 'Domain':
+                 for row, row_ids in domains.items():
+                    if row.endswith(scope_item['scope_value']):
+                        to_activate.update(row_ids)
+        for scope_item in scope_data:
+            if scope_item['scope_type'] == 'Subnet':
+                 for row, row_ids in ips.items():
+                    if data_utils.is_ip_in_subnet(row, scope_item['scope_value']):
+                        to_activate.update(row_ids)
+            if scope_item['scope_type'] == 'IP':
+                for row, row_ids in ips.items():
+                    if scope_item['scope_value'] == row:
+                        to_activate.update(row_ids)
+            
+        to_deactivate.difference_update(to_activate)
+
+        if to_activate:
+            self.batch_update_scope_status(to_activate, 'in')
+        if to_deactivate:
+            self.batch_update_scope_status(to_deactivate, 'out')
+    
+
+    def summerize_ids(self, rows, row_column_index):
+        summerize_to_ids = {}
         for row in rows:
             row_id = row[0]
-            is_scope_active = False  
-            for scope_item in scope_data:
-                if scope_item['scope_type'] == 'Domain' and str(row[2]).endswith(scope_item['scope_value']):
-                    is_scope_active = True
-                    break
-                elif scope_item['scope_type'] == 'Subnet' and datautils.is_ip_in_subnet(row[1], scope_item['scope_value']):
-                    is_scope_active = True
-                    break
-                elif scope_item['scope_type'] == 'IP' and scope_item['scope_value'] == row[1]:
-                    is_scope_active = True
-                    break
-                else:
-                    pass
-                    print("Scope is not a valid type. No insert:", scope_item['scope_type'])
-
-            if is_scope_active:
-                self.activate_scope(row_id)
-            else:
-                self.deactivate_scope(row_id)
+            domain = row[row_column_index]
+            if domain not in summerize_to_ids:
+                summerize_to_ids[domain] = []
+            summerize_to_ids[domain].append(row_id)
+        return summerize_to_ids
+    
+    def summerize_dns_ip_ids(self, rows, row_dns_type_index, row_dns_value_index):
+        summerize_to_ids = {}
+        for row in rows:
+            row_id = row[0]
+            dns_type = row[row_dns_type_index]
+            dns_value = row[row_dns_value_index]
+            if dns_type == '1' or dns_type == '28':
+                if dns_value not in summerize_to_ids:
+                    summerize_to_ids[dns_value] = []
+                summerize_to_ids[dns_value].append(row_id)
+        return summerize_to_ids
 
 
 
@@ -161,54 +198,31 @@ class Shodan(BaseDataSources):
         search_result =  self._safe_request(url)
         if not search_result or search_result == 'error':
             return
-        search_result = json.loads(search_result)
         if search_result:
             if 'data' in search_result: 
                 self.insert_input_data(search_result.get('data',''))
 
-    def _old_safe_request(self,url):
-        if self.config["CACHING"]:
-            response = datautils.read_cache_url(url,self.name)
-            if response:
-                if response == self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"):
-                     return False
-                return response
-        try:
-            time.sleep(1) #because of API limitations
-            response = requests.get(url)
-            response.raise_for_status()
-            if self.config["CACHING"]:
-                parsed_url = urlparse(url)
-                file_name = os.path.basename(parsed_url.path.replace('/', '_').replace(':', '-'))
-                datautils.write_cache_url(file_name, self.name,response)
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            if self.config["CACHING"]:
-                parsed_url = urlparse(url)
-                file_name = os.path.basename(parsed_url.path.replace('/', '_').replace(':', '-'))
-                datautils.write_cache_url(file_name, self.name,self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"))
-            print(f"Request error: {e}")
-            return None
-        
     
     def _safe_request(self, url):
-        if self.config["CACHING"]:
+        if self.config["CACHING"]["USE_CACHING"]:
             parsed_url = urlparse(url)
             query = os.path.basename(parsed_url.path.replace('/', '_').replace(':', '-'))
             identifier = self.cache_db._generate_identifier(query, self.name)
             cached_response = self.cache_db.get(identifier)
             if cached_response:
-                return cached_response['value']
+                if self.enforce_cached_error_policy(cached_response['value']):
+                    return cached_response['value']
 
         try:
             response = requests.get(url)
             response.raise_for_status()
+            response_text = json.loads(response.text)
 
-            if self.config["CACHING"]:
-                self.cache_db.set(identifier,response.text)
-            return response.text
+            if self.config["CACHING"]["USE_CACHING"]:
+                self.cache_db.set(identifier,response_text)
+            return response_text
         except requests.exceptions.RequestException as e:
-            if self.config["CACHING"]:
+            if self.config["CACHING"]["USE_CACHING"]:
                 self.cache_db.set(identifier, self.config.get("CACHE_UNSUCCESSFUL_CONTENT_PATTERN", "error"))
             app_logger.error(f"Request error: {e}")
             return None
@@ -217,10 +231,11 @@ class Shodan(BaseDataSources):
             return None
 
 
+
     def _get_json_api_values(self, json_obj):
-        if datautils.check_ip_version(json_obj.get('ip_str', '')) == "IPv4":
+        if data_utils.check_ip_version(json_obj.get('ip_str', '')) == "IPv4":
             dns_ip_version = '1'
-        elif datautils.check_ip_version(json_obj.get('ip_str', '')) == "IPv6":
+        elif data_utils.check_ip_version(json_obj.get('ip_str', '')) == "IPv6":
             dns_ip_version = '28'
         return {
             'hash': json_obj.get('hash', 0),
@@ -246,9 +261,11 @@ class Shodan(BaseDataSources):
             'org': json_obj.get('org', ''),
             'os': json_obj.get('os', ''),
             'asn': json_obj.get('asn', ''),
+            'tags': json.dumps(json_obj.get('tags','')),
+            'vulns': json.dumps(json_obj.get('vulns','')),
             'transport': json_obj.get('transport', ''),
             'http_status': json_obj.get('http', {}).get('status', ''),
-            'http_redirects': len(json_obj.get('http', {}).get('redirects', [])),
+            'http_redirects': json.dumps(json_obj.get('http', {}).get('redirects', [])),
             'http_title': json_obj.get('http', {}).get('title', ''),
             'http_host': json_obj.get('http', {}).get('host', ''),
             'http_server': json_obj.get('http', {}).get('server', ''),

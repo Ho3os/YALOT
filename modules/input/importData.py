@@ -1,13 +1,13 @@
 import requests
 import datetime
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
 from urllib.parse import urlparse
 import os
 from modules.input.basedatasources import BaseDataSources
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
-from utils import datautils
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
+from utils import data_utils
 import logging
 from utils.metadata_analysis import db_metadata_analysis_module
 import json
@@ -23,8 +23,9 @@ class ImportData(BaseDataSources):
         self.data_model_path =  general_handlers['data_model_path']
         self.name = general_handlers['name']
         self.column_mapping = {}
-        self._import_data_model()
         self.delimiter = ','
+        self.check_availability_of_import_files()
+        self._import_data_model()
         super().__init__(general_handlers, general_handlers['name'], self.column_mapping)
         
 
@@ -32,6 +33,14 @@ class ImportData(BaseDataSources):
     @func_call_logger(log_level=logging.INFO)
     def run(self):
         pass
+
+    def check_availability_of_import_files(self):
+        if not os.path.exists(self.data_model_path):
+                raise FileNotFoundError(f"The file '{self.data_model_path}' does not exist.")
+        if not os.path.exists(self.data_path):
+                raise FileNotFoundError(f"The file '{self.data_path}' does not exist.")
+        return True
+
 
     def _import_data_model(self):
         try:
@@ -53,7 +62,6 @@ class ImportData(BaseDataSources):
         except PermissionError as e:
             app_logger.error(f"Permission error: {e}")
         except Exception as e:
-            # Catch any other unexpected exceptions
             app_logger.error(f"An unexpected error occurred: {e}")
 
     def import_data(self):

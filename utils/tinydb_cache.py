@@ -3,15 +3,37 @@ from tinydb import TinyDB, Query
 from datetime import datetime
 import re
 from typing import Any, Dict, Union, List, Tuple
-from utils import datautils
+from utils import data_utils
 
 class TinyDBCache:
     def __init__(self, cache_folder: str) -> None:
         self.cache_folder: str = cache_folder
-        datautils.create_path_if_not_exists(cache_folder)
-        self.db: TinyDB = TinyDB(os.path.join(cache_folder, 'cache.json'))
-        self.history_db: TinyDB = TinyDB(os.path.join(cache_folder, 'history.json'))
+        data_utils.create_path_if_not_exists(cache_folder)
+        self.config = data_utils.get_config()
         self.separator: str = '|'
+        self.db = None
+        self.history_db = None
+        self.create_db()
+    
+    def __exit__(self):
+        self.db.close()
+        self.history_db.close()
+
+    def create_db(self):
+        if "CACHING" in self.config and "USE_CACHING" in self.config["CACHING"] and self.config["CACHING"]["USE_CACHING"] and "CACHE_DIRECTORY_PATH" in self.config["CACHING"]:
+            file_name_cache = self.config["CACHING"]["CACHE_FILE_NAME_CACHE"]
+            file_name_history = self.config["CACHING"]["CACHE_FILE_NAME_HISTORY"]
+            
+            if "PREFIX_PROJECT_NAME_TO_CACHE_NAME" in self.config["CACHING"] and "PROJECT_NAME" in self.config and self.config["CACHING"]["PREFIX_PROJECT_NAME_TO_CACHE_NAME"]:
+                file_name_cache = self.config["PROJECT_NAME"] + '_' + file_name_cache
+            if "PREFIX_PROJECT_NAME_TO_HISTORY_NAME" in self.config["CACHING"] and "PROJECT_NAME" in self.config and self.config["CACHING"]["PREFIX_PROJECT_NAME_TO_HISTORY_NAME"]:
+                file_name_history = self.config["PROJECT_NAME"] + '_' + file_name_history
+
+            self.db: TinyDB = TinyDB(os.path.join(self.config["CACHING"]["CACHE_DIRECTORY_PATH"],file_name_cache))
+            self.history_db: TinyDB = TinyDB(os.path.join(self.config["CACHING"]["CACHE_DIRECTORY_PATH"],file_name_history))
+        else:
+            raise ValueError("Database is not properly defined in config. Currently it is required")
+
 
     def _generate_identifier(self, module_query: str, module_name: str) -> str:
         encoded_module_query, encoded_module_name = self._sanitize_identifier(module_query, module_name)
@@ -72,6 +94,9 @@ class TinyDBCache:
 
     def delete(self, identifier: str) -> None:
         self.db.remove(Query().key == identifier)
+
+    def delete_starting_with_string(self, module_name: str) -> None:
+        self.db.remove(Query().key.matches(f'^{re.escape(module_name)}'))
 
     def clear(self) -> None:
         self.db.truncate()

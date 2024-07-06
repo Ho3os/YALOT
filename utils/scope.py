@@ -2,15 +2,16 @@ import datetime
 import ipaddress
 import logging
 import sys
+import os
 
 from typing import Any, Dict, List, Optional, Union
 
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
-from utils import datautils
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
+from utils import data_utils
 from utils import robtex
-from utils.instancemanager import InstanceManager
-from utils.configmanager import ConfigManager
+from utils.instance_manager import InstanceManager
+from utils.config_controller import ConfigManager
 
 class Scope:
     """description of class"""
@@ -35,7 +36,13 @@ class Scope:
             for instance in retrieved_instance.values():
                 instance.scope_receive(message)
 
-    def insert_from_file(self, file_path: str) -> None:
+    def insert_from_file(self, file_path: str = "") -> None:
+        try:
+            if file_path == "":
+                file_path = os.path.join(self.config["SCOPE"]["SCOPE_DIRECTORY_PATH"], self.config["SCOPE"]["SCOPE_FILE_NAME"])
+        except KeyError:
+              app_logger.error(f"Config file configuration contains an error. Key error: {e}")
+              sys.exit(1)
         try:
             with open(file_path, 'r') as file:
                 lines = file.readlines()
@@ -141,7 +148,6 @@ class Scope:
         return 0
 
     def get_scope(self, scope_type: Optional[str] = None) -> List[Dict[str, Union[int, str]]]:
-        cursor = self.db.conn.cursor()
         if scope_type == "Domain":
             records = self.db.execute_sql('''SELECT id, time_created, time_modified, scope_type, scope_value, scope_status, scope_source, scope_description FROM scope WHERE scope_type = "Domain"''')
         else:

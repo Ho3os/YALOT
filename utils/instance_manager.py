@@ -1,5 +1,5 @@
 from typing import Any, Dict, Optional
-from utils.applogger import func_call_logger
+from utils.app_logger import func_call_logger
 import logging
 
 class InstanceManager:

@@ -1,17 +1,14 @@
 from abc import ABC, abstractmethod
-from utils.instancemanager import InstanceManager
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
-from utils import datautils
+from utils.config_controller import ConfigManager
+from utils.instance_manager import InstanceManager
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
+from utils import data_utils
 import logging
 import datetime
 import sqlite3
 from itertools import zip_longest
 import sys
-from utils.configmanager import ConfigManager
-
-
-
 
 class BaseDataSources(ABC):
     def __init__(self, general_handlers, name, column_mapping, target_table='collection'):
@@ -70,7 +67,6 @@ class BaseDataSources(ABC):
     @func_call_logger(log_level=logging.DEBUG)
     def _postprocessing_and_clenaup(self,target_table):
         self._postprocessing_dns_types_and_ips(target_table)
-        #self.scope_receive('postprocessing scope reevalutation of: ' +self.name)
         InstanceManager.get_output_instance(target_table).scope_receive('postprocessing scope reevalutation through: '+ self.name)
 
     @func_call_logger(log_level=logging.DEBUG)
@@ -110,6 +106,8 @@ class BaseDataSources(ABC):
     @func_call_logger(log_level=logging.DEBUG)
     def sync_input_into_output(self, meta_data, target_table='collection'):
         self._update_through_subset_input_into_output(target_table, meta_data)
+        #todo a more role based approach
+        #self._update_existing_records(target_table,meta_data)
         self._insert_input_into_output(target_table, meta_data)
         self._meta_data_update_input_into_output(target_table, meta_data)
 
@@ -125,6 +123,33 @@ class BaseDataSources(ABC):
         self.db.execute_sql(find_subset_query_weak)
         find_subset_query_strong = self._get_find_subset_strong_update_query_for_insert_into_output_data(target_table, meta_data)
         self.db.execute_sql(find_subset_query_strong)
+
+
+    #TODO create a super duper primary. shodan it is IP, port
+    def __update_to_complete_existing_records(self,target_table, meta_data):
+        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
+
+        query = f'''
+            UPDATE {target_table} as t4
+            SET {insert_columns}, OSINTsource = CASE
+                     WHEN t4.OSINTsource NOT LIKE '%{self.name}%' THEN t4.OSINTsource || ',{self.name}'
+                     ELSE t4.OSINTsource
+                  END 
+            FROM    
+                (SELECT t2.id, {insert_columns_t1}, t1.RowNum
+                FROM 
+                    (SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
+                    FROM {self.tablename})as t1
+                LEFT JOIN 
+                    (SELECT *
+                    FROM {target_table}
+                    ) as t2
+                ON  {' AND '.join([f'(t1.{col} = t2.{col})' for col in ['ip','port']])} 
+                ) as t3
+            WHERE t4.id=t3.id and RowNum = 1;
+        '''
+        self.db.execute_sql(query)
 
     '''
     Regular insert for the target_table.
@@ -153,9 +178,7 @@ class BaseDataSources(ABC):
                 else:
                     updated_osintsource = existing_osintsource
             else:
-                # If the row is new, set OSINTsource to the module name
                 updated_osintsource = [module_name]
-            # Execute the update query with timestamp, OSINTsource, and status
             self.db.execute_sql(update_query, (input_time_modified, ",".join(updated_osintsource), row_id))
 
     def _get_update_meta_data_query_for_insert_into_output_data(self,target_table, meta_data):
@@ -183,8 +206,11 @@ class BaseDataSources(ABC):
 
         find_subset_query_strong = f'''
             UPDATE {target_table} as t4
-            SET {insert_columns}, OSINTsource = t4.OSINTsource || ',{self.name}'
-            FROM 
+            SET {insert_columns}, OSINTsource = CASE
+                     WHEN t4.OSINTsource NOT LIKE '%{self.name}%' THEN t4.OSINTsource || ',{self.name}'
+                     ELSE t4.OSINTsource
+                  END 
+            FROM    
                 (SELECT t2.id, {insert_columns_t1}, t1.RowNum
                 FROM 
                     (SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
@@ -216,7 +242,10 @@ class BaseDataSources(ABC):
 
         select_query_different = f"""
             UPDATE {target_table} AS t4
-            SET {insert_columns}, OSINTsource = OSINTsource || ',{self.name}'
+            SET {insert_columns}, OSINTsource = CASE
+                     WHEN t4.OSINTsource NOT LIKE '%{self.name}%' THEN t4.OSINTsource || ',{self.name}'
+                     ELSE t4.OSINTsource
+                  END 
             FROM ( 
                 SELECT t2.id, {insert_columns_t1}, t1.RowNum
                 FROM (
@@ -258,6 +287,9 @@ class BaseDataSources(ABC):
     '''
     @func_call_logger(log_level=logging.DEBUG)
     def insert_input_data(self, input_objs):
+        #TODO how do we want to safe errors to the database
+        if input_objs == 'error':
+            return
         self.column_mappings_rated_lists_without_meta = self.prepare_mappings_without_meta()
         columns_insertion_meta = self.prepare_mappings_insertion_meta()
         insertion_columns = columns_insertion_meta + self.column_mappings_rated_lists_without_meta
@@ -324,15 +356,11 @@ class BaseDataSources(ABC):
 
 
     def prepare_mappings_rated_lists(self):
-        # Separate primary and secondary keys
         primary_keys = tuple(key for key, (_, label, _) in  self.column_mapping.items() if label == 'primary')
         secondary_keys = tuple(key for key, (_, label, _) in  self.column_mapping.items() if label == 'secondary')
-
-        # Create the ColumnMappingObject
         return {'primary': primary_keys, 'secondary': secondary_keys}
 
     def check_if_primary_record_exists(self, *args):
-        # Ensure that the number of arguments matches the number of primary columns
         if len(args) != len(self.self.column_mappings_rated_lists_rated_lists['primary']):
             raise ValueError("Number of arguments doesn't match the number of primary columns.")
         values = list(args)
@@ -378,11 +406,8 @@ class BaseDataSources(ABC):
             else:
                 to_deactivate.append(row_id)
 
-            # Batch update for activation
         if to_activate:
             self.batch_update_scope_status(to_activate, 'in')
-
-        # Batch update for deactivation
         if to_deactivate:
             self.batch_update_scope_status(to_deactivate, 'out')
 
@@ -396,7 +421,7 @@ class BaseDataSources(ABC):
         
         ip_index = self.is_in_list(columns,'ip') + 1
         if ip_index:
-            if (scope_item['scope_type'] == 'Subnet' and datautils.is_ip_in_subnet(row[ip_index], scope_item['scope_value'])):
+            if (scope_item['scope_type'] == 'Subnet' and data_utils.is_ip_in_subnet(row[ip_index], scope_item['scope_value'])):
                 return True
             if (scope_item['scope_type'] == 'IP' and scope_item['scope_value'] == row[ip_index]):
                 return True
@@ -404,7 +429,7 @@ class BaseDataSources(ABC):
         dns_value_index = self.is_in_list(columns,'dns_value') + 1
         dns_type_index = self.is_in_list(columns,'dns_type') + 1
         if dns_type_index and dns_value_index and (row[dns_value_index] == '1' or  row[dns_value_index] == '28'):
-            if (scope_item['scope_type'] == 'Subnet' and datautils.is_ip_in_subnet(row[dns_value_index], scope_item['scope_value'])):
+            if (scope_item['scope_type'] == 'Subnet' and data_utils.is_ip_in_subnet(row[dns_value_index], scope_item['scope_value'])):
                 return True
             if (scope_item['scope_type'] == 'IP' and scope_item['scope_value'] == row[dns_value_index]):
                 return True
@@ -419,15 +444,10 @@ class BaseDataSources(ABC):
 
     @func_call_logger(log_level=logging.DEBUG)
     def batch_update_scope_status(self, row_ids, status, chunk_size=5000):
-        # Perform a batch update of scope status for the provided row IDs
         for chunk_ids in zip_longest(*[iter(row_ids)] * chunk_size, fillvalue=None):
-            # Remove any None values from the chunk
             chunk_ids = [id for id in chunk_ids if id is not None]
-
             placeholders = ",".join(["?" for _ in chunk_ids])
             update_query = f"UPDATE {self.tablename} SET scope_status = ? WHERE id IN ({placeholders})"
-            
-            # Append the status to the beginning of the chunk
             parameters = [status] + chunk_ids
             try:
                 self.db.execute_sql(update_query, parameters)
@@ -463,7 +483,7 @@ class BaseDataSources(ABC):
 
 
     def _check_existing_domain(self,subdomain):
-        domain, tld = datautils.extract_domain_and_tld(subdomain)
+        domain, tld = data_utils.extract_domain_and_tld(subdomain)
         search_query = f'''
             SELECT 1
             FROM {self.tablename}
@@ -491,6 +511,15 @@ class BaseDataSources(ABC):
                 "column_list": self.column_mappings_rated_lists['primary'],
                 "target_table_name": self.target_table}
 
+
+    #policy is if it is an error requery
+    #todo make it configerable 
+    #todo create multiple policies.
+    def enforce_cached_error_policy(self,response_value):
+        if response_value == 'error':
+            return False
+        else:
+            return True
 
 
 

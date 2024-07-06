@@ -1,15 +1,16 @@
 import requests
 import datetime
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
 from urllib.parse import urlparse
 import os
 from modules.input.basedatasources import BaseDataSources
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
-from utils import datautils
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
+from utils import data_utils
 import logging
 from utils.metadata_analysis import db_metadata_analysis_module
+import json
 
 class Crtsh(BaseDataSources):
     """description of class"""
@@ -40,8 +41,10 @@ class Crtsh(BaseDataSources):
     @func_call_logger(log_level=logging.INFO)
     def run(self):
         self.search_based_on_scope()
-        #self.search_based_on_collection()
-        #self.update_collection()
+        #self.search_based_on_collection() TODO breaks
+        self.scope_receive("redo in out")
+        self.update_collection()
+        pass
 
 
     '''
@@ -65,7 +68,6 @@ class Crtsh(BaseDataSources):
                 resp = self.search_domain(scope_item['scope_value'])
                 if resp:
                     self.insert_input_data(resp)
-        self.update_collection()
 
    
     def search_domain(self,domain_name):
@@ -74,35 +76,13 @@ class Crtsh(BaseDataSources):
         return resp
 
 
-    def old_safe_request(self,url):
-        headers = {
-            'User-Agent': 'YourCustomUserAgent/1.0'
-        }
-        if self.config["CACHING"]:
-            response = datautils.read_cache_url(url,self.name)
-            if response:
-                return response
-        try:
-            response = requests.get(url,headers=headers)
-            response.raise_for_status()
-            if self.config["CACHING"]:
-                parsed_url = urlparse(url)
-                file_name = os.path.basename(parsed_url.query.split('=')[-1])
-                datautils.write_cache_url(file_name, self.name,response)
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            app_logger.error(f"Request error: {e}")
-            return None
-        except Exception as e:
-            app_logger.error(f"Error: {e}")
-            return None
         
 
     def safe_request(self, url):
         headers = {
             'User-Agent': 'YourCustomUserAgent/1.0'
         }
-        if self.config["CACHING"]:
+        if self.config["CACHING"]["USE_CACHING"]:
             parsed_url = urlparse(url)
             query = os.path.basename(parsed_url.query.split('=')[-1])
             identifier = self.cache_db._generate_identifier(query, self.name)
@@ -111,12 +91,13 @@ class Crtsh(BaseDataSources):
                 return cached_response['value']
 
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url)
             response.raise_for_status()
+            response_text = json.loads(response.text)
 
-            if self.config["CACHING"]:
-                self.cache_db.set(identifier, response.text)
-            return response.json()
+            if self.config["CACHING"]["USE_CACHING"]:
+                self.cache_db.set(identifier,response_text)
+            return response_text
         except requests.exceptions.RequestException as e:
             app_logger.error(f"Request error: {e}")
             return None

@@ -3,23 +3,28 @@ import os
 import sys
 import logging
 from typing import Any, Dict, List, Union, Optional
-from utils.applogger import app_logger, func_call_logger
-from utils.configmanager import ConfigManager
+from utils.app_logger import app_logger, func_call_logger
+from utils.config_controller import ConfigManager
 
 
 
 class OSINTDatabase:
     def __init__(self, db_name: str = 'Database.db') -> None:
         self.db_name = db_name
+        self.db_path = ""
         self.config: Dict[str, str] = ConfigManager().get_config()
-        if "DB_PATH" in self.config:
-            if not os.path.exists(self.config.get("DB_PATH", "")):
-                os.makedirs(self.config.get("DB_PATH", ""))
+        if "DATABASE" in self.config and "DATABASE_DIRECTORY_PATH" in self.config["DATABASE"]:
+            self.db_path = self.config["DATABASE"].get("DATABASE_DIRECTORY_PATH", "")
+            if not os.path.exists(self.db_path):
+                os.makedirs(self.db_path)
         self.conn: Optional[sqlite3.Connection] = None
         self.connect()
+
+    def __exit__(self):
+        self.conn.close()
         
     def connect(self):
-        self.conn = sqlite3.connect(os.path.join(self.config.get("DB_PATH", ""), self.db_name))
+        self.conn = sqlite3.connect(os.path.join(self.db_path, self.db_name))
 
     def check_and_open_conn(self):
         if not self.conn:

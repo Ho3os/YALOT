@@ -1,13 +1,20 @@
 import logging
 import logging.handlers
-import functools
+from functools import wraps
 import sys
 import os
 from typing import Callable
+from utils.config_controller import ConfigManager
+#from utils.config_controller import ConfigManager
+
 
 log_level_basic: int = logging.INFO
 log_level_log_file: int = logging.DEBUG
 log_level_console: int = logging.INFO
+config = ConfigManager().get_config()
+#if "PROJECT_NAME" in config:
+#     log_file_name: str = config["PROJECT_NAME"]+'.log'
+#else:
 log_file_name: str = 'YALOT.log'
 log_directory_name: str = 'log'
 
@@ -34,7 +41,7 @@ app_logger: logging.Logger = logging.getLogger(__name__)
 
 def func_call_logger(log_level: int = logging.DEBUG) -> Callable:
     def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
+        @wraps(func)
         def wrapper(*args, **kwargs):
             app_logger.log(log_level, f"Calling function {func.__name__} with args: {args}, kwargs: {kwargs}")
             result = func(*args, **kwargs)

@@ -1,12 +1,12 @@
-from utils import datautils
-from utils.instancemanager import InstanceManager
-from  utils.applogger import app_logger
-from  utils.applogger import func_call_logger
-from utils import datautils
+from utils import data_utils
+from utils.instance_manager import InstanceManager
+from  utils.app_logger import app_logger
+from  utils.app_logger import func_call_logger
+from utils import data_utils
 import logging
 from itertools import zip_longest
 import sqlite3
-from utils.configmanager import ConfigManager
+from utils.config_controller import ConfigManager
 
 class Collection(object):
     def __init__(self, general_handlers, name="collection"):
@@ -27,6 +27,8 @@ class Collection(object):
             'transport': ('TEXT', 'secondary',''),
             'dns_type': ('TEXT','primary', ''),
             'dns_value': ('TEXT', 'secondary',''),
+                'tags': ('TEXT','secondary', ''),
+            'vulns': ('TEXT','secondary', ''),
             'asn': ('TEXT', 'secondary',''),
             'isp': ('TEXT', 'secondary',''),
             'org': ('TEXT', 'secondary',''),
@@ -61,46 +63,57 @@ class Collection(object):
         columns = ', '.join(f'{col}' for col in column_fields)
         rows = self.db.execute_sql(f'''SELECT id, {columns} FROM {self.tablename}''')
         scope_data = self.scope.get_scope()
-        to_activate = []
-        to_deactivate = []
-        for row in rows:
-            row_id = row[0]
-            is_scope_active = any(self.is_row_in_scope(row, scope_item, column_fields) for scope_item in scope_data)
-            if is_scope_active:
-                to_activate.append(row_id)
-            else:
-                to_deactivate.append(row_id)
+        to_activate = set()
+        to_deactivate = set(range(len(rows)))
+
+        domains = self.summerize_ids(rows, 1)
+        ips = self.summerize_dns_ip_ids(rows, 3,4)
+
+        for scope_item in scope_data:
+            if scope_item['scope_type'] == 'Domain':
+                 for row, row_ids in domains.items():
+                    if row.endswith(scope_item['scope_value']):
+                        to_activate.update(row_ids)
+            if scope_item['scope_type'] == 'Subnet':
+                 for row, row_ids in ips.items():
+                    if data_utils.is_ip_in_subnet(row, scope_item['scope_value']):
+                        to_activate.update(row_ids)
+            if scope_item['scope_type'] == 'IP':
+                for row, row_ids in ips.items():
+                    if scope_item['scope_value'] == row:
+                        to_activate.update(row_ids)
+            
+        to_deactivate.difference_update(to_activate)
+
         if to_activate:
             self.batch_update_scope_status(to_activate, 'in')
         if to_deactivate:
             self.batch_update_scope_status(to_deactivate, 'out')
-
-    @func_call_logger(log_level=logging.DEBUG)
-    def is_row_in_scope(self, row, scope_item, columns):
-        domain_index = self.is_in_list(columns,'domain') + 1
-        if domain_index:
-            if (scope_item['scope_type'] == 'Domain' and str(row[domain_index]).endswith(scope_item['scope_value'])):
-                return True
-        ip_index = self.is_in_list(columns,'ip') + 1
-        if ip_index:
-            if (scope_item['scope_type'] == 'Subnet' and datautils.is_ip_in_subnet(row[ip_index], scope_item['scope_value'])):
-                return True
-            if (scope_item['scope_type'] == 'IP' and scope_item['scope_value'] == row[ip_index]):
-                return True
-        dns_value_index = self.is_in_list(columns,'dns_value') + 1
-        dns_type_index = self.is_in_list(columns,'dns_type') + 1
-        if dns_type_index and dns_value_index and (row[dns_value_index] == '1' or  row[dns_value_index] == '28'):
-            if (scope_item['scope_type'] == 'Subnet' and datautils.is_ip_in_subnet(row[dns_value_index], scope_item['scope_value'])):
-                return True
-            if (scope_item['scope_type'] == 'IP' and scope_item['scope_value'] == row[dns_value_index]):
-                return True
-        return False
     
-    def is_in_list(self,element_list,element):
-        try:
-            return element_list.index(element)
-        except ValueError:
-            return False
+
+    def summerize_ids(self, rows, row_column_index):
+        summerize_to_ids = {}
+        for row in rows:
+            row_id = row[0]
+            domain = row[row_column_index]
+            if domain not in summerize_to_ids:
+                summerize_to_ids[domain] = []
+            summerize_to_ids[domain].append(row_id)
+        return summerize_to_ids
+    
+    def summerize_dns_ip_ids(self, rows, row_dns_type_index, row_dns_value_index):
+        summerize_to_ids = {}
+        for row in rows:
+            row_id = row[0]
+            dns_type = row[row_dns_type_index]
+            dns_value = row[row_dns_value_index]
+            if dns_type == '1' or dns_type == '28':
+                if dns_value not in summerize_to_ids:
+                    summerize_to_ids[dns_value] = []
+                summerize_to_ids[dns_value].append(row_id)
+        return summerize_to_ids
+    
+    
 
 
     @func_call_logger(log_level=logging.DEBUG)

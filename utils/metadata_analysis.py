@@ -1,10 +1,10 @@
-from  utils.applogger import app_logger
-import functools
+from  utils.app_logger import app_logger
+from functools import wraps
 from typing import Callable
 
 def db_metadata_analysis():
     def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
+        @wraps(func)
         def wrapper(*args, **kwargs):
             def calculate_row_counts(db):
                 cursor = db.conn.cursor()
@@ -38,7 +38,7 @@ Can only be used on modules
 '''
 def db_metadata_analysis_module():
     def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
+        @wraps(func)
         def wrapper(*args, **kwargs):
             def calculate_row_count_single_table(data_struct):
                 cursor =  data_struct['db'].conn.cursor()
