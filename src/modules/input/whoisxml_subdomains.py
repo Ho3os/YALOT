@@ -2,17 +2,17 @@ from urllib.parse import urlparse
 import requests
 import datetime
 import logging
-from utils.app_logger import app_logger
-from utils.app_logger import func_call_logger
-from utils import data_utils
+from src.utils.app_logger import app_logger
+from src.utils.app_logger import func_call_logger
+from src.utils import data_utils
 import json
 import os
-from modules.input.basedatasources import BaseDataSources
-from utils.metadata_analysis import db_metadata_analysis_module
+from src.modules.input.base_input_sources import BaseInputSources
+from src.utils.metadata_analysis import db_metadata_analysis_module
 
-class WhoisXml_SubDomains(BaseDataSources):
+class WhoisXml_SubDomains(BaseInputSources):
     """description of class"""
-    def __init__(self, general_handlers, name='WhoisXml_SubDomains', api_key=''):
+    def __init__(self, general_handlers, name='whoisxml_subdomains', api_key=''):
         self.column_mapping = {
             'id': ('INTEGER PRIMARY KEY', 'id', 'meta'),
             'time_created': ('TEXT', '', 'meta'),
@@ -37,7 +37,7 @@ class WhoisXml_SubDomains(BaseDataSources):
     Receiver function from parent class, which is called if new data from an output table can be used to query new data. Make sure that the column corresponds to the correct primary value
     '''
     @func_call_logger(log_level=logging.DEBUG)
-    def receiver_search_by_primary_values(self,rows,originating_output_table_name):
+    def receiver_search_by_primary_values(self,rows):
         result_set = set(row[0] for row in rows)
         for result in result_set:
                 if result and not self._check_existing_domain(result) and self.scope.check_domain_in_scope(result):
@@ -124,7 +124,7 @@ class WhoisXml_SubDomains(BaseDataSources):
     def search_based_on_scope(self,timethreshold_refresh_in_days=365):
         to_search = []
         for scope_item in self.scope.get_scope("Domain"):
-            row = self.db.execute_sql_fetchone('''SELECT domain FROM columbus WHERE domain = ? 
+            row = self.db.execute_sql_fetchone('''SELECT domain FROM whoisxml_subdomains WHERE domain = ? 
             ''', (scope_item['scope_value'],))
             if not row:
                 to_search.append(scope_item['scope_value'])

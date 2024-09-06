@@ -4,8 +4,8 @@ from functools import wraps
 import sys
 import os
 from typing import Callable
-from utils.config_controller import ConfigManager
-#from utils.config_controller import ConfigManager
+from src.utils.config_controller import ConfigManager
+#from src.utils.config_controller import ConfigManager
 
 
 log_level_basic: int = logging.INFO

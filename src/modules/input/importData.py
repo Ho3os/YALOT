@@ -1,22 +1,22 @@
 import requests
 import datetime
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
 from urllib.parse import urlparse
 import os
-from modules.input.basedatasources import BaseDataSources
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
-from utils import data_utils
+from src.modules.input.base_input_sources import BaseInputSources
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
+from src.utils import data_utils
 import logging
-from utils.metadata_analysis import db_metadata_analysis_module
+from src.utils.metadata_analysis import db_metadata_analysis_module
 import json
 import csv
 
 '''
 This class additionally need data_path and data_model_path to work.
 '''
-class ImportData(BaseDataSources):
+class ImportData(BaseInputSources):
     """description of class"""
     def __init__(self, general_handlers):
         self.data_path = general_handlers['data_path']
@@ -74,7 +74,6 @@ class ImportData(BaseDataSources):
                 for row in csv_reader: 
                     x = {header[i]: row[i] for i in range(len(header))}
                     self.insert_input_data(x)
-            self.update_collection()
         except FileNotFoundError as e:
             app_logger.error(f"Error: {e}")
         except csv.Error as e:

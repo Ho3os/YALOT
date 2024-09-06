@@ -3,8 +3,8 @@ import os
 import sys
 import logging
 from typing import Any, Dict, List, Union, Optional
-from utils.app_logger import app_logger, func_call_logger
-from utils.config_controller import ConfigManager
+from src.utils.app_logger import app_logger, func_call_logger
+from src.utils.config_controller import ConfigManager
 
 
 
@@ -18,13 +18,23 @@ class OSINTDatabase:
             if not os.path.exists(self.db_path):
                 os.makedirs(self.db_path)
         self.conn: Optional[sqlite3.Connection] = None
+        self.abs_path_db = os.path.abspath(os.path.join(self.db_path, self.db_name))
         self.connect()
 
     def __exit__(self):
         self.conn.close()
+
+    def delete_database_file(self):
+        self.disconnect()
+        self.delete_file(self.abs_path_db)
+
         
     def connect(self):
-        self.conn = sqlite3.connect(os.path.join(self.db_path, self.db_name))
+        self.conn = sqlite3.connect(self.abs_path_db)
+
+    def disconnect(self):
+        if self.conn:
+            self.conn.close()
 
     def check_and_open_conn(self):
         if not self.conn:
@@ -43,6 +53,8 @@ class OSINTDatabase:
             else:
                 if isinstance(data[0], (list, tuple)):
                     cursor.executemany(query, data)
+                elif isinstance(data, str):
+                    cursor.execute(query, (data,))
                 else:
                     cursor.execute(query, data)
 
@@ -84,12 +96,12 @@ class OSINTDatabase:
 
 
     @func_call_logger(log_level=logging.DEBUG)
-    def delete_existing_database(self, db_name: str) -> None:
-        if os.path.exists(db_name):
-            os.remove(db_name)
-            app_logger.info(f"Deleted existing database: {db_name}")
+    def delete_file(self,file_path):
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            app_logger.info(f"Deleted existing database: {file_path}")
         else:
-            app_logger.info(f"Database does not exist: {db_name}")
+            app_logger.info(f"Database does not exist: {file_path}")
 
     @func_call_logger(log_level=logging.DEBUG)
     def replace_none_with_null(self, json_obj: Any) -> Any:

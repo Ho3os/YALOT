@@ -1,18 +1,21 @@
-from utils import data_utils
-from utils.instance_manager import InstanceManager
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
-from utils import data_utils
+from src.utils import data_utils
+from src.modules.instance_manager import InstanceManager
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
+from src.utils import data_utils
 import logging
 from itertools import zip_longest
 import sqlite3
-from utils.config_controller import ConfigManager
+from src.utils.config_controller import ConfigManager
 
 class Collection(object):
     def __init__(self, general_handlers, name="collection"):
         self.name = name
         self.tablename = name
-        InstanceManager.register_output_instance(self.name, self)
+        self.link_strategy = None
+        self.config = ConfigManager().get_config()
+        self.input_modules = ConfigManager().get_input_modules_of_output_module(self.name)
+        InstanceManager.register_output_instance(self.name, self, self.input_modules)
         self.column_mapping = {
             'id': ('INTEGER PRIMARY KEY', 'id', 'meta'),
             'OSINTsource': ('TEXT', 'secondary', 'meta'),
@@ -27,8 +30,7 @@ class Collection(object):
             'transport': ('TEXT', 'secondary',''),
             'dns_type': ('TEXT','primary', ''),
             'dns_value': ('TEXT', 'secondary',''),
-                'tags': ('TEXT','secondary', ''),
-            'vulns': ('TEXT','secondary', ''),
+            'tags': ('TEXT','secondary', ''),
             'asn': ('TEXT', 'secondary',''),
             'isp': ('TEXT', 'secondary',''),
             'org': ('TEXT', 'secondary',''),
@@ -46,15 +48,21 @@ class Collection(object):
             'cert_issued': ('TEXT', 'secondary',''),
             'cert_expires': ('TEXT', 'secondary',''),
             'ssl_ja3s': ('TEXT', 'secondary',''),
-            'ssl_jarm': ('TEXT', 'secondary','')
+            'ssl_jarm': ('TEXT', 'secondary',''),
+            'vulns': ('TEXT','secondary', '')
         }
         self.db = general_handlers['osint_database']
         self._create_table()
         self.scope = general_handlers['scope']
-        self.config = ConfigManager().get_config()
+        
+
+    def set_strategy(self, strategy):
+        self.link_strategy = strategy
+        self.link_strategy.set_link_output_module(self)
 
     def get_column_mapping(self):
         return self.column_mapping.copy()
+
 
         '''Scope'''
     @func_call_logger(log_level=logging.INFO)

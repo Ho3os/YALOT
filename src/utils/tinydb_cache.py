@@ -3,10 +3,14 @@ from tinydb import TinyDB, Query
 from datetime import datetime
 import re
 from typing import Any, Dict, Union, List, Tuple
-from utils import data_utils
+import logging
+from src.utils import data_utils
+from src.utils.app_logger import app_logger, func_call_logger
 
 class TinyDBCache:
     def __init__(self, cache_folder: str) -> None:
+        self.abs_path_db = None
+        self.abs_path_history = None
         self.cache_folder: str = cache_folder
         data_utils.create_path_if_not_exists(cache_folder)
         self.config = data_utils.get_config()
@@ -16,8 +20,24 @@ class TinyDBCache:
         self.create_db()
     
     def __exit__(self):
+        self.close()
+
+    def close(self):
         self.db.close()
         self.history_db.close()
+
+    def delete_database_files(self):
+        self.close()
+        self.delete_file(self.abs_path_db)
+        self.delete_file(self.abs_path_history)
+
+    @func_call_logger(log_level=logging.DEBUG)
+    def delete_file(self,file_path):
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            app_logger.info(f"Deleted existing database: {file_path}")
+        else:
+            app_logger.info(f"Database does not exist: {file_path}")
 
     def create_db(self):
         if "CACHING" in self.config and "USE_CACHING" in self.config["CACHING"] and self.config["CACHING"]["USE_CACHING"] and "CACHE_DIRECTORY_PATH" in self.config["CACHING"]:
@@ -29,8 +49,10 @@ class TinyDBCache:
             if "PREFIX_PROJECT_NAME_TO_HISTORY_NAME" in self.config["CACHING"] and "PROJECT_NAME" in self.config and self.config["CACHING"]["PREFIX_PROJECT_NAME_TO_HISTORY_NAME"]:
                 file_name_history = self.config["PROJECT_NAME"] + '_' + file_name_history
 
-            self.db: TinyDB = TinyDB(os.path.join(self.config["CACHING"]["CACHE_DIRECTORY_PATH"],file_name_cache))
-            self.history_db: TinyDB = TinyDB(os.path.join(self.config["CACHING"]["CACHE_DIRECTORY_PATH"],file_name_history))
+            self.abs_path_db = os.path.abspath(os.path.join(self.config["CACHING"]["CACHE_DIRECTORY_PATH"],file_name_cache))
+            self.db: TinyDB = TinyDB(self.abs_path_db)
+            self.abs_path_history = os.path.abspath(os.path.join(self.config["CACHING"]["CACHE_DIRECTORY_PATH"],file_name_history))
+            self.history_db: TinyDB = TinyDB(self.abs_path_history)
         else:
             raise ValueError("Database is not properly defined in config. Currently it is required")
 

@@ -1,22 +1,22 @@
-from modules.input.basedatasources import BaseDataSources
+from src.modules.input.base_input_sources import BaseInputSources
 import shodan
 from urllib.parse import urlparse
 import requests
 import datetime
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
 import json
 import os
 import time
 import ast
-from utils.instance_manager import InstanceManager
-from utils import data_utils
+from src.modules.instance_manager import InstanceManager
+from src.utils import data_utils
 import logging
-from utils.metadata_analysis import db_metadata_analysis_module
+from src.utils.metadata_analysis import db_metadata_analysis_module
 
 SUBNET_SEARCH = True
 
-class Shodan(BaseDataSources):
+class Shodan(BaseInputSources):
     def __init__(self, general_handlers, name="shodan", api_key=""):
         self.column_mapping = {
             'id': ('INTEGER PRIMARY KEY', 'id', 'meta'),
@@ -96,7 +96,7 @@ class Shodan(BaseDataSources):
     '''
     Receiver function from parent class, which is called if new data from an output table can be used to query new data. Make sure that the column corresponds to the correct primary value
     '''
-    def receiver_search_by_primary_values(self,rows,originating_output_table_name):
+    def receiver_search_by_primary_values(self,rows):
         result_set = set()
         for row in rows:
             if row[1] == '1':
@@ -117,8 +117,6 @@ class Shodan(BaseDataSources):
                         row = self.db.execute_sql_fetchone(''' SELECT ip, time_modified FROM shodan WHERE ip =  ? ''', (str(ip),))
                         if not row:
                             self._search_host_by_ip_api(str(ip))
-
-        #self.update_collection()
 
     def update_collection(self):
         time_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -315,3 +313,6 @@ class Shodan(BaseDataSources):
        
     def condiction_select_for_subset_updates_input_into_output(self):
         return "AND (t2.dns_value = t1.ip AND (t2.dns_type = '1' OR t2.dns_type = '28') OR t2.dns_value IS NULL)"
+    
+    def condiction_select_based_on_output(self):
+        return "AND t1.ip IS NOT NULL"

@@ -1,7 +1,7 @@
 import time
 from functools import wraps
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
 
 start_time = time.time()
 

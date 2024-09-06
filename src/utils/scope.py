@@ -6,14 +6,15 @@ import os
 
 from typing import Any, Dict, List, Optional, Union
 
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
-from utils import data_utils
-from utils import robtex
-from utils.instance_manager import InstanceManager
-from utils.config_controller import ConfigManager
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
+from src.utils import data_utils
+from src.utils import robtex
+from src.modules.instance_manager import InstanceManager
+from src.utils.config_controller import ConfigManager
 
 class Scope:
+    VALID_STATUSES = {'active', 'inactive'}
     """description of class"""
     def __init__(self, db: Any, name: str = "scope") -> None:
         self.db = db
@@ -24,16 +25,17 @@ class Scope:
 
     @func_call_logger(log_level=logging.INFO)
     def publish_update_scope(self, message: str = "",  instance_name: Optional[str] = None) -> None:
+        retrieved_instance = []
         if instance_name:
             retrieved_instance = InstanceManager.get_input_instance(instance_name)
             if not retrieved_instance:
                 retrieved_instance = InstanceManager.get_output_instance(instance_name)
         else:
             retrieved_instance = InstanceManager.get_input_instances()
-            retrieved_instance.update(InstanceManager.get_output_instances())
+            retrieved_instance.extend(InstanceManager.get_output_instances())
             
         if retrieved_instance: 
-            for instance in retrieved_instance.values():
+            for instance in retrieved_instance:
                 instance.scope_receive(message)
 
     def insert_from_file(self, file_path: str = "") -> None:
@@ -133,7 +135,7 @@ class Scope:
         time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         scope_description = scope.get('scope_description', '')
         scope_source = scope.get('scope_source', '')
-        self.db.execute_sql('''
+        result = self.db.execute_sql('''
             INSERT INTO scope (time_created, time_modified, scope_type, scope_value, scope_status, scope_description, scope_source)  VALUES (?, ?, ?, ?, ?, ?, ?)''', (
                 time,
                 time,
@@ -145,7 +147,7 @@ class Scope:
             )
         )
         app_logger.debug(f"New scope inserted successfully: {scope['scope_value']}")
-        return 0
+        return result
 
     def get_scope(self, scope_type: Optional[str] = None) -> List[Dict[str, Union[int, str]]]:
         if scope_type == "Domain":
@@ -156,13 +158,14 @@ class Scope:
             'scope_value': record[4], 'scope_status': record[5], "scope_source": record[6], "scope_description": record[7]} for record in records]
 
     def set_status(self, scope_id: int, status: str = "inactive") -> None:
-        if (status not in ["inactive", "active"]) or (not isinstance(scope_id, int) or scope_id <= 0):
-            app_logger.error(f"Invalid parameters: scope_id={scope_id}, status={status}")
-            return
-        self.db.execute_sql('''UPDATE scope SET scope_status = ? WHERE id = ?''', (status, scope_id))
+        if not isinstance(scope_id, int):
+            raise TypeError(f"scope_id must be an integer, got {type(scope_id).__name__}")
+        if status not in self.VALID_STATUSES:
+            raise ValueError(f"Invalid status: {status}. Valid statuses are: {self.VALID_STATUSES}")
+        result = self.db.execute_sql('''UPDATE scope SET scope_status = ? WHERE id = ?''', (status, scope_id))
+        return result
 
-
-    def check_domain_in_scope(self, type: str, domain: str) -> bool:
+    def check_domain_in_scope(self, domain: str) -> bool:
         query = f'''SELECT 1 FROM scope WHERE scope_type = 'Domain' AND scope_value LIKE ? '''
         results = self.db.execute_sql(query, ('%'+domain,))
         if results:

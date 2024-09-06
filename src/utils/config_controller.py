@@ -2,7 +2,7 @@ import json
 from typing import Dict, Optional
 import os
 import sys
-from utils.init_logger import init_logger
+from src.utils.init_logger import init_logger
 
 
 
@@ -60,6 +60,19 @@ class ConfigManager(metaclass=SingletonMeta):
     def is_config_loaded(cls) -> bool:
         return cls._config is not None
     
+    def get_input_modules_of_output_module(cls, output_name):
+        config = cls.get_config()
+        input_modules = []
+        sources = config["modules"]["output"][output_name]["sources"] 
+        if isinstance(sources, str) and sources == "all":
+            for input_module in config["modules"]["input"]:
+                input_modules.append(input_module)
+        elif isinstance(sources, list):
+            for input_module in sources:
+                if input_module in config["modules"]["input"]:
+                    input_modules.append(input_module.key)
+        return input_modules
+    
 def deep_merge_dicts(target, source):
     """
     Recursively merge source dictionary into target dictionary.
@@ -96,16 +109,16 @@ def check_non_ascii_in_string(value, key_path):
     if not all(ord(char) < 128 for char in value):
         raise ValueError(f"Non-ASCII value found at '{key_path}': {value}")
 
-def recursively_check_config(config, key_path=''):
+def recursively_ascii_check_config(config, key_path=''):
     """Recursively check the config for non-ASCII strings."""
     if isinstance(config, dict):
         for key, value in config.items():
             if not isinstance(key, str) or not all(ord(char) < 128 for char in key):
                 raise ValueError(f"Non-ASCII key found: {key_path + key}")
-            recursively_check_config(value, key_path + key + '.')
+            recursively_ascii_check_config(value, key_path + key + '.')
     elif isinstance(config, list):
         for index, item in enumerate(config):
-            recursively_check_config(item, key_path + f'[{index}]')
+            recursively_ascii_check_config(item, key_path + f'[{index}]')
     else:
         check_non_ascii_in_string(config, key_path)
 
@@ -133,7 +146,7 @@ def validate_config(config):
             if not os.path.isfile(file_path):
                 raise ValueError(f"File does not exist: {file_path}")
                  
-        recursively_check_config(value)
+        recursively_ascii_check_config(value)
     return True
 
 

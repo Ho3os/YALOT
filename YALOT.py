@@ -1,4 +1,4 @@
-from utils import config_controller
+from src.utils import config_controller
 import argparse
 
 
@@ -25,8 +25,8 @@ def command_usage():
 
     config_controller.setup_config(args)
 
-    import utils.run_manager
-    utils.run_manager.run(utils.run_manager.setup())
+    import src.utils.run_manager
+    src.utils.run_manager.run(src.utils.run_manager.setup())
 
 
 if __name__ == "__main__":

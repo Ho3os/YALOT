@@ -1,18 +1,18 @@
 import requests
 import datetime
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
 from urllib.parse import urlparse
 import os
-from modules.input.basedatasources import BaseDataSources
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
-from utils import data_utils
+from src.modules.input.base_input_sources import BaseInputSources
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
+from src.utils import data_utils
 import logging
-from utils.metadata_analysis import db_metadata_analysis_module
+from src.utils.metadata_analysis import db_metadata_analysis_module
 import json
 
-class Crtsh(BaseDataSources):
+class Crtsh(BaseInputSources):
     """description of class"""
     def __init__(self, general_handlers, name = "crtsh", api_key = '', timethreshold_refresh_in_days=365):
         self.column_mapping = {
@@ -45,12 +45,12 @@ class Crtsh(BaseDataSources):
         self.scope_receive("redo in out")
         self.update_collection()
         pass
-
+    
 
     '''
     Receiver function from parent class, which is called if new data from an output table can be used to query new data. Make sure that the column corresponds to the correct primary value
     '''
-    def receiver_search_by_primary_values(self,rows,originating_output_table_name):
+    def receiver_search_by_primary_values(self,rows):
         result_set = set(row[0] for row in rows)
         for result in result_set:
             if result and not self._check_existing_domain(result) and self.scope.check_domain_in_scope(result):
@@ -145,20 +145,17 @@ class Crtsh(BaseDataSources):
     Overwritten to address MAX(certsh_id) to keep only one entry in select input
     Overwrite if domain does not exists or if secoundary values of primary group have a NULL
     '''
-    def _get_update_meta_data_query_for_insert_into_output_data(self,target_table, meta_data):
-        parent_query = super()._get_update_meta_data_query_for_insert_into_output_data(target_table, meta_data)
+    def _get_update_meta_data_query_for_insert_into_output_data(self,parent_query):
         return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
     
     '''
     Overwritten to address MAX(certsh_id) to keep only one entry in select input
     Overwrite if domain does not exists or if secoundary values of primary group have a NULL
     '''
-    def _get_find_subset_weak_update_query_for_insert_into_output_data(self,target_table, meta_data):
-        parent_query = super()._get_find_subset_weak_update_query_for_insert_into_output_data(target_table, meta_data)
+    def _get_find_subset_weak_update_query_for_insert_into_output_data(self,parent_query):
         return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
     
-    def _get_find_subset_strong_update_query_for_insert_into_output_data(self,target_table, meta_data):
-        parent_query = super()._get_find_subset_strong_update_query_for_insert_into_output_data(target_table, meta_data)
+    def _get_find_subset_strong_update_query_for_insert_into_output_data(self,parent_query):
         return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
 
 
@@ -166,8 +163,7 @@ class Crtsh(BaseDataSources):
     Overwritten to address MAX(certsh_id) to keep only one entry in select input
     Overwrite if domain does not exists or if secoundary values of primary group have a NULL
     '''
-    def _get_insert_query_for_insert_into_output_data(self,target_table, meta_data):
-        parent_query = super(). _get_insert_query_for_insert_into_output_data(target_table, meta_data)
+    def _get_insert_query_for_insert_into_output_data(self,parent_query):
         return parent_query.replace("ORDER BY time_modified DESC", "ORDER BY crtsh_id DESC")
 
 

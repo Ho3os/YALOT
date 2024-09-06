@@ -1,4 +1,4 @@
-from  utils.app_logger import app_logger
+from  src.utils.app_logger import app_logger
 from functools import wraps
 from typing import Callable
 

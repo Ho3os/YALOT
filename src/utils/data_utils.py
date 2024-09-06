@@ -10,11 +10,11 @@ import json
 import logging
 import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
-from utils.app_logger import app_logger, func_call_logger
-from utils.config_controller import ConfigManager
-from utils.database import OSINTDatabase
+from src.utils.app_logger import app_logger, func_call_logger
+from src.utils.config_controller import ConfigManager
+from src.utils.database import OSINTDatabase
 import csv
-from utils.instance_manager import InstanceManager
+from src.modules.instance_manager import InstanceManager
 
 pattern: re.Pattern = re.compile(
     r'^(([a-zA-Z]{1})|([a-zA-Z]{1}[a-zA-Z]{1})|'
@@ -119,15 +119,17 @@ def create_header_from_keys(column_mapping):
 def dump_all_module_tables_to_csv(include_mapping_export=True) -> None:
     instances = InstanceManager.get_all_instances()
     for instance in instances.values():
-        dump_table_to_csv(instance)
+        dump_table_to_csv(instance["instance"])
 
 def dump_module_table(instance_name: Optional[str] = None,include_mapping_export=True) -> None:
     if instance_name:
         retrieved_instance = InstanceManager.get_input_instance(instance_name)
+        if retrieved_instance: 
+            dump_table_to_csv(retrieved_instance)
         if not retrieved_instance:
             retrieved_instance = InstanceManager.get_output_instance(instance_name)
-    if retrieved_instance: 
-        dump_table_to_csv(retrieved_instance)
+            if retrieved_instance: 
+                dump_table_to_csv(retrieved_instance)
     else:
         app_logger.error("Export error in dump_module_table: No instance {instance_name} found.")
 

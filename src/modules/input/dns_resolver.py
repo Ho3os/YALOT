@@ -1,16 +1,16 @@
 import dns.resolver 
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
 import datetime
 import time
-from utils.instance_manager import InstanceManager
-from modules.input.basedatasources import BaseDataSources
-from utils import data_utils
+from src.modules.instance_manager import InstanceManager
+from src.modules.input.base_input_sources import BaseInputSources
+from src.utils import data_utils
 import logging
-from utils.metadata_analysis import db_metadata_analysis_module
+from src.utils.metadata_analysis import db_metadata_analysis_module
 
 #Using this class is not opsec safe and will result in DNS queries being actively resolved at target infrastructure.
-class Dnsresolver(BaseDataSources):
+class Dnsresolver(BaseInputSources):
     """description of class"""
     def __init__(self, general_handlers, name='dns_resolver', api_key="", dns_timeout=0, dns_resolver_ips=["8.8.8.8"]):
         self.column_mapping = {
@@ -44,7 +44,6 @@ class Dnsresolver(BaseDataSources):
             ''', (scope_item['scope_value'],))
             if not rows:
                 self.resolve_handler(scope_item['scope_value'])
-        self.update_collection()
         
 
 
@@ -52,12 +51,12 @@ class Dnsresolver(BaseDataSources):
     '''
     Receiver function from parent class, which is called if new data from an output table can be used to query new data. Make sure that the column corresponds to the correct primary value
     '''
-    def receiver_search_by_primary_values(self,rows,originating_output_table_name):
+    def receiver_search_by_primary_values(self,rows):
         result_set = set(row[0] for row in rows)
         for result in result_set:
                 if result:
                     self.resolve_handler(result)
-        self.update_collection()
+
 
 
     '''Scope'''
@@ -94,6 +93,7 @@ class Dnsresolver(BaseDataSources):
 
     '''Search'''
     def resolve_handler(self, domain):
+        #TODO get rid of the * wildcard in domains
         if self.config["AGGRESSIVE_SCANS"]:
             for ans in self.resolve_all_common_types(domain):
                 app_logger.debug("DNS " + domain + " " + ', '.join(map(str,ans)))

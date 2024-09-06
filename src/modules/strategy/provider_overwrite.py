@@ -1,30 +1,65 @@
 from abc import ABC, abstractmethod
-from utils.config_controller import ConfigManager
-from utils.instance_manager import InstanceManager
-from  utils.app_logger import app_logger
-from  utils.app_logger import func_call_logger
-from utils import data_utils
+from src.utils.config_controller import ConfigManager
+from src.modules.instance_manager import InstanceManager
+from  src.utils.app_logger import app_logger
+from  src.utils.app_logger import func_call_logger
+from src.utils import data_utils
 import logging
 import datetime
 import sqlite3
 from itertools import zip_longest
 import sys
 
-class BaseDataSources(ABC):
-    def __init__(self, general_handlers, name, column_mapping, target_table='collection'):
-        self.name = name
-        self.tablename = name
-        InstanceManager.register_input_instance(self.name, self)
+class StrategyProviderOverwrite(ABC):
+    def __init__(self, general_handlers, output_module, target_table='collection'):
+        self.name = output_module["instance"].name
+        self.tablename = output_module["instance"].name
+        self.link_output_module = None
         self.db = general_handlers['osint_database']
         self.cache_db = general_handlers['cache_db']
         self.scope = general_handlers['scope']
         self.data_timeout_threshold = general_handlers['data_timeout_threshold']
-        self.target_table = target_table
-        self.column_mapping = column_mapping
-        self.column_mappings_rated_lists = self.prepare_mappings_rated_lists()
-        self.column_mappings_rated_lists_primary_secondary_chained = self.column_mappings_rated_lists['primary'] + self.column_mappings_rated_lists['secondary']
-        self._create_table()
+        self.target_table = self.name
         self.config = ConfigManager().get_config()
+        self.input_instances = output_module["input_instances"]
+        self.reset_input_context()
+
+    def set_link_output_module(self, output_instance):
+        self.link_output_module = output_instance
+
+    def get_data_update_from_all_inputs(self):
+        for input_instance in self.input_instances:
+            if input_instance:
+                self.get_data_update_from_input(input_instance.name)
+
+    def get_data_update_from_input(self, input_instance_name):
+        for instance in self.input_instances:
+            if instance and instance.name == input_instance_name:
+                self.set_input_context(instance)
+                self.update_collection()
+                self.reset_input_context()
+                return True
+        return False
+
+
+    def set_input_context(self, input_instance):
+        self.current_input_instance = input_instance
+        self.current_input_tablename = input_instance.tablename
+        self.current_column_mapping = self.current_input_instance.get_column_mapping()
+        self.current_column_mappings_rated_lists = self.prepare_mappings_rated_lists()
+        self.current_column_mappings_rated_lists_primary_secondary_chained = \
+            self.current_column_mappings_rated_lists['primary'] +\
+            self.current_column_mappings_rated_lists['secondary']
+
+    def reset_input_context(self):  
+        self.current_input_instance = None
+        self.current_input_tablename = None
+        self.current_input_tablename = None
+        self.current_column_mapping = None
+        self.current_column_mappings_rated_lists = None
+        self.current_column_mappings_rated_lists_primary_secondary_chained = None
+                
+
 
 
     @func_call_logger(log_level=logging.DEBUG)
@@ -38,28 +73,6 @@ class BaseDataSources(ABC):
         self.sync_input_into_output(meta_data)
         self._postprocessing_and_clenaup(self.target_table)
 
-    @func_call_logger(log_level=logging.DEBUG)
-    def search_based_on_collection(self,timethreshold_refresh_in_days=365):
-        time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        time_threshold = datetime.datetime.now() - datetime.timedelta(days=timethreshold_refresh_in_days)
-        primary_csv = ','.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])
-        primary_csv_t1 = ','.join([f't1.{col}' for col in self.column_mappings_rated_lists['primary']])
-        search_query = f''' SELECT {primary_csv_t1}
-                FROM
-                    (SELECT {primary_csv}, MAX(time_modified) as latest_time_modified
-                    FROM {self.target_table}
-                    WHERE scope_status = 'in' 
-                    GROUP BY {primary_csv}) as t1
-                LEFT JOIN {self.tablename} as t2
-                ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
-                WHERE
-                    {' AND '.join([f't2.{col} IS NULL' for col in self.column_mappings_rated_lists['primary']])}'''
-            
-        # where in ... AND {' AND '.join([f'{col} IS NOT NULL' for col in self.column_mappings_rated_lists['primary']])}
-        rows = self.db.execute_sql(search_query)
-        if rows:
-            self.receiver_search_by_primary_values(rows,self.target_table)
-        self.update_collection()
 
     """
     This function is used to keep a target_table clean and perform post processing tasks.
@@ -67,7 +80,7 @@ class BaseDataSources(ABC):
     @func_call_logger(log_level=logging.DEBUG)
     def _postprocessing_and_clenaup(self,target_table):
         self._postprocessing_dns_types_and_ips(target_table)
-        InstanceManager.get_output_instance(target_table).scope_receive('postprocessing scope reevalutation through: '+ self.name)
+        InstanceManager.get_output_instance(target_table).scope_receive('postprocessing scope reevalutation through: '+ self.current_input_tablename)
 
     @func_call_logger(log_level=logging.DEBUG)
     def _postprocessing_dns_types_and_ips(self, target_table):
@@ -127,20 +140,20 @@ class BaseDataSources(ABC):
 
     #TODO create a super duper primary. shodan it is IP, port
     def __update_to_complete_existing_records(self,target_table, meta_data):
-        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
 
         query = f'''
             UPDATE {target_table} as t4
             SET {insert_columns}, OSINTsource = CASE
-                     WHEN t4.OSINTsource NOT LIKE '%{self.name}%' THEN t4.OSINTsource || ',{self.name}'
+                     WHEN t4.OSINTsource NOT LIKE '%{self.current_input_tablename}%' THEN t4.OSINTsource || ',{self.current_input_tablename}'
                      ELSE t4.OSINTsource
                   END 
             FROM    
                 (SELECT t2.id, {insert_columns_t1}, t1.RowNum
                 FROM 
-                    (SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
-                    FROM {self.tablename})as t1
+                    (SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.current_column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
+                    FROM {self.current_input_tablename})as t1
                 LEFT JOIN 
                     (SELECT *
                     FROM {target_table}
@@ -170,7 +183,7 @@ class BaseDataSources(ABC):
         meta_data_update_query = self._get_update_meta_data_query_for_insert_into_output_data(target_table, meta_data)
         rows_same = self.db.execute_sql(meta_data_update_query)
         for row_id, input_time_modified, existing_time_modified, existing_osintsource in rows_same:
-            module_name = self.name
+            module_name = self.current_input_tablename
             if existing_osintsource:
                 existing_osintsource = existing_osintsource.split(",")
                 if module_name not in existing_osintsource:
@@ -186,45 +199,53 @@ class BaseDataSources(ABC):
             FROM ( 
                 SELECT t2.id, t1.time_modified AS t1tm, t2.time_modified AS t2tm, t2.OSINTsource, t1.RowNum
                 FROM (
-                    SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
-                    FROM {self.tablename}
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.current_column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
+                    FROM {self.current_input_tablename}
                 ) AS t1
                 LEFT JOIN {target_table} AS t2 
-                ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
-                WHERE t2.id IS NOT NULL AND OSINTsource NOT LIKE '%{self.name}%'
+                ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.current_column_mappings_rated_lists['primary']])}
+                WHERE t2.id IS NOT NULL AND OSINTsource NOT LIKE '%{self.current_input_tablename}%'
             )
             WHERE RowNum = 1;
         """
+        if hasattr(self.current_input_instance, "_get_update_meta_data_query_for_insert_into_output_data"):
+                return self.current_input_instance._get_update_meta_data_query_for_insert_into_output_data(select_query_same)
         return select_query_same
     
     '''
     We only find subsets if they are 100 clean to use also from a secondary perspective
     '''
     def _get_find_subset_strong_update_query_for_insert_into_output_data(self,target_table, meta_data):  
-        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
+
+        condition = None
+        if hasattr(self.current_input_instance, "condition_select_for_subset_updates_input_into_output"):
+            condition = self.current_input_instance.condition_select_for_subset_updates_input_into_output()
 
         find_subset_query_strong = f'''
             UPDATE {target_table} as t4
             SET {insert_columns}, OSINTsource = CASE
-                     WHEN t4.OSINTsource NOT LIKE '%{self.name}%' THEN t4.OSINTsource || ',{self.name}'
+                     WHEN t4.OSINTsource NOT LIKE '%{self.current_input_tablename}%' THEN t4.OSINTsource || ',{self.current_input_tablename}'
                      ELSE t4.OSINTsource
                   END 
             FROM    
                 (SELECT t2.id, {insert_columns_t1}, t1.RowNum
                 FROM 
-                    (SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
-                    FROM {self.tablename})as t1
+                    (SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.current_column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
+                    FROM {self.current_input_tablename})as t1
                 LEFT JOIN 
                     (SELECT *
                     FROM {target_table}
-                    WHERE {' OR '.join([f'{col} IS NULL' for col in self.column_mappings_rated_lists['primary']])} 
+                    WHERE {' OR '.join([f'{col} IS NULL' for col in self.current_column_mappings_rated_lists['primary']])} 
                     ) as t2
-                ON  {' AND '.join([f'(t1.{col} = t2.{col} OR t2.{col} IS NULL)' for col in self.column_mappings_rated_lists['primary']])} 
-                WHERE  t2.id IS NOT NULL {self.condition_select_for_subset_updates_input_into_output() if self.condition_select_for_subset_updates_input_into_output() else ''}
+                ON  {' AND '.join([f'(t1.{col} = t2.{col} OR t2.{col} IS NULL)' for col in self.current_column_mappings_rated_lists['primary']])} 
+                WHERE  t2.id IS NOT NULL {condition if condition else ''}
                 ) as t3
             WHERE t4.id=t3.id and RowNum = 1;
         '''
+        if hasattr(self.current_input_instance, "_get_find_subset_strong_update_query_for_insert_into_output_data"):
+                return self.current_input_instance._get_find_subset_strong_update_query_for_insert_into_output_data(find_subset_query_strong)
         return find_subset_query_strong
         
         
@@ -233,107 +254,60 @@ class BaseDataSources(ABC):
     We only find subsets if they are 100 clean to use also from a secondary perspective
     '''
     def _get_find_subset_weak_update_query_for_insert_into_output_data(self,target_table, meta_data):
-        if self.column_mappings_rated_lists['secondary']:
-            secondary_values_key_conditions_different = 'and (' + ' AND '.join([f't2.{col} IS NULL' for col in self.column_mappings_rated_lists['secondary']]) + ')'
+        if self.current_column_mappings_rated_lists['secondary']:
+            secondary_values_key_conditions_different = 'and (' + ' AND '.join([f't2.{col} IS NULL' for col in self.current_column_mappings_rated_lists['secondary']]) + ')'
         else:
             secondary_values_key_conditions_different = ''
-        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns = ', '.join(f'{col}=t3.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
 
         select_query_different = f"""
             UPDATE {target_table} AS t4
             SET {insert_columns}, OSINTsource = CASE
-                     WHEN t4.OSINTsource NOT LIKE '%{self.name}%' THEN t4.OSINTsource || ',{self.name}'
+                     WHEN t4.OSINTsource NOT LIKE '%{self.current_input_tablename}%' THEN t4.OSINTsource || ',{self.current_input_tablename}'
                      ELSE t4.OSINTsource
                   END 
             FROM ( 
                 SELECT t2.id, {insert_columns_t1}, t1.RowNum
                 FROM (
-                    SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
-                    FROM {self.tablename}
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.current_column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
+                    FROM {self.current_input_tablename}
                 ) AS t1
                 LEFT JOIN {target_table} AS t2 
-                ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
+                ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.current_column_mappings_rated_lists['primary']])}
                 WHERE t2.id is NOT NULL {secondary_values_key_conditions_different} 
             )  AS t3
             WHERE t4.id=t3.id and RowNum = 1;
         """
+        if hasattr(self.current_input_instance, "_get_find_subset_weak_update_query_for_insert_into_output_data"):
+                return self.current_input_instance._get_find_subset_weak_update_query_for_insert_into_output_data(select_query_different)
         return select_query_different
     
     def _get_insert_query_for_insert_into_output_data(self,target_table, meta_data):
-        insert_columns = ', '.join(f'{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
-        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns = ', '.join(f'{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
+        insert_columns_t1 = ', '.join(f't1.{col}' for col in self.current_column_mappings_rated_lists_primary_secondary_chained)
 
         select_query_different = f"""
             INSERT INTO {target_table} ({insert_columns + ", OSINTsource, " + ', '.join([f"'{col}'" for col in list(meta_data.keys())])})
-                SELECT {insert_columns + ", '" + self.name +"', " + ', '.join([f"'{meta_data[col]}'" for col in list(meta_data.keys())])}    
+                SELECT {insert_columns + ", '" + self.current_input_tablename +"', " + ', '.join([f"'{meta_data[col]}'" for col in list(meta_data.keys())])}    
                 FROM ( 
                     SELECT {insert_columns_t1}, t1.RowNum
                     FROM (
-                        SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
-                        FROM {self.tablename}
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY {', '.join([f'{col}' for col in self.current_column_mappings_rated_lists['primary']])} ORDER BY time_modified DESC) AS RowNum
+                        FROM {self.current_input_tablename}
                     ) AS t1
                     LEFT JOIN {target_table} AS t2 
-                    ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.column_mappings_rated_lists['primary']])}
+                    ON {' AND '.join([f't1.{col} = t2.{col}' for col in self.current_column_mappings_rated_lists['primary']])}
                     WHERE t2.id is NULL
                 )
                 WHERE RowNum = 1;
         """
+        if hasattr(self.current_input_instance, "_get_insert_query_for_insert_into_output_data"):
+                return self.current_input_instance._get_insert_query_for_insert_into_output_data(select_query_different)
         return select_query_different
 
 
-    '''
-    Takes API data from the input source and inserts it in its own input table
-    '''
-    @func_call_logger(log_level=logging.DEBUG)
-    def insert_input_data(self, input_objs):
-        #TODO how do we want to safe errors to the database
-        if input_objs == 'error':
-            return
-        self.column_mappings_rated_lists_without_meta = self.prepare_mappings_without_meta()
-        columns_insertion_meta = self.prepare_mappings_insertion_meta()
-        insertion_columns = columns_insertion_meta + self.column_mappings_rated_lists_without_meta
-        columns = ', '.join(insertion_columns)
-        placeholders = ', '.join(['?' for _ in range(len(insertion_columns))])
-        where_clause = ' AND '.join([f"{col} = ?" for col in self.column_mappings_rated_lists_without_meta])
 
-        # Generate the SELECT query to check for existence
-        select_query = f'''
-            SELECT id
-            FROM {self.tablename}
-            WHERE {where_clause};
-        '''
-
-        # Generate the INSERT query
-        insert_query = f'''
-            INSERT INTO {self.tablename} ({columns})
-            VALUES ({placeholders});
-        '''
-
-        update_query = f'''
-            UPDATE {self.tablename} 
-            SET time_modified = ?, scope_status = ?
-            WHERE id = ?
-        '''
-
-        try:
-            # Start a transaction
-            with self.db.conn:
-                insertion_data_objs = self.prepare_input_insertion_data(input_objs)
-                for obj in insertion_data_objs:
-                    obj = {k: '' if v is None else v for k, v in obj.items()}
-                    select_dict = self._get_insertion_data_subset_by_column_mapping_filter(obj, self.column_mappings_rated_lists_without_meta)
-                    insert_dict = self._reorder_insertion_data(obj, insertion_columns)
-                    result = self.db.conn.execute(select_query, list(select_dict.values())).fetchone()
-
-                    if not result:
-                        self.db.conn.execute(insert_query, list(insert_dict.values()))
-                    else:
-                        self.db.conn.execute(update_query, (obj.get("time_modified", ""), obj.get("scope_status", ""), result[0]))
-
-        except sqlite3.Error as e:
-            app_logger.error(f"Error: {e}")
-            self.db.conn.rollback()
 
         
     def _reorder_insertion_data(self,insertion_data, insertion_columns):
@@ -349,37 +323,30 @@ class BaseDataSources(ABC):
         return data_subset
 
     def prepare_mappings_without_meta(self):
-        return list([key for key, (_, _, label) in  self.column_mapping.items() if label != 'meta'])
+        return list([key for key, (_, _, label) in  self.current_column_mapping.items() if label != 'meta'])
     
     def prepare_mappings_insertion_meta(self):
-        return list([key for key, (_, label, label2) in  self.column_mapping.items() if label2 == 'meta' and label != 'id' ])
+        return list([key for key, (_, label, label2) in  self.current_column_mapping.items() if label2 == 'meta' and label != 'id' ])
 
 
     def prepare_mappings_rated_lists(self):
-        primary_keys = tuple(key for key, (_, label, _) in  self.column_mapping.items() if label == 'primary')
-        secondary_keys = tuple(key for key, (_, label, _) in  self.column_mapping.items() if label == 'secondary')
+        primary_keys = tuple(key for key, (_, label, _) in  self.current_column_mapping.items() if label == 'primary')
+        secondary_keys = tuple(key for key, (_, label, _) in  self.current_column_mapping.items() if label == 'secondary')
         return {'primary': primary_keys, 'secondary': secondary_keys}
 
     def check_if_primary_record_exists(self, *args):
-        if len(args) != len(self.self.column_mappings_rated_lists_rated_lists['primary']):
+        if len(args) != len(self.self.current_column_mappings_rated_lists_rated_lists['primary']):
             raise ValueError("Number of arguments doesn't match the number of primary columns.")
         values = list(args)
-        where_clause = ' AND '.join([f"{col} = ?" for col in self.self.column_mappings_rated_lists_rated_lists['primary']])
+        where_clause = ' AND '.join([f"{col} = ?" for col in self.self.current_column_mappings_rated_lists_rated_lists['primary']])
         rows = self.db.execute_sql(f'''SELECT id 
-                    FROM {self.tablename} 
+                    FROM {self.current_input_tablename} 
                     WHERE {where_clause}''', tuple(values))
         if rows:
             return rows[0][0]
         else:
             return False
         
-    
-    @func_call_logger(log_level=logging.INFO)
-    def _create_table(self):
-        table_columns = ', '.join([f"{col} {data_type}" for col, (data_type, _ , _) in self.column_mapping.items()])
-        table_sql = f'CREATE TABLE IF NOT EXISTS {self.tablename} ({table_columns})'
-        self.db.execute_sql(table_sql)
-
     @func_call_logger(log_level=logging.DEBUG)
     def activate_scope(self, row_id):
         self.db.execute_sql(f'''UPDATE {self.tablename} SET scope_status = 'in' WHERE id = ?''', (row_id,))
@@ -391,7 +358,7 @@ class BaseDataSources(ABC):
     '''Scope'''
     @func_call_logger(log_level=logging.INFO)
     def scope_receive(self, message):
-        columns = ', '.join(f'{col}' for col in self.column_mappings_rated_lists["primary"])
+        columns = ', '.join(f'{col}' for col in self.current_column_mappings_rated_lists["primary"])
         rows = self.db.execute_sql(f'''SELECT id, {columns} FROM {self.tablename}''')
         scope_data = self.scope.get_scope()
 
@@ -400,7 +367,7 @@ class BaseDataSources(ABC):
 
         for row in rows:
             row_id = row[0]
-            is_scope_active = any(self.is_row_in_scope(row, scope_item, self.column_mappings_rated_lists["primary"]) for scope_item in scope_data)
+            is_scope_active = any(self.is_row_in_scope(row, scope_item, self.current_column_mappings_rated_lists["primary"]) for scope_item in scope_data)
             if is_scope_active:
                 to_activate.append(row_id)
             else:
@@ -454,34 +421,6 @@ class BaseDataSources(ABC):
             except sqlite3.Error as e:
                 app_logger.error(f"Error updating scope status: {e}")
 
-    
-
-    @abstractmethod
-    @func_call_logger(log_level=logging.INFO)
-    
-    def run(self):
-        """
-        Abstract method to define running the module.
-        """
-        pass
-
-    @abstractmethod
-    def prepare_input_insertion_data():
-        """
-        Abstract method to get the likely API data in a finished preprocessed and unified structure.
-        """
-        pass
-
-
-    @abstractmethod
-    @func_call_logger(log_level=logging.DEBUG)
-    def receiver_search_by_primary_values(self):
-        """
-        This receiver method handles 
-        """
-        pass
-
-
     def _check_existing_domain(self,subdomain):
         domain, tld = data_utils.extract_domain_and_tld(subdomain)
         search_query = f'''
@@ -508,7 +447,7 @@ class BaseDataSources(ABC):
         This function should only be called by the decorator.
         """
         return {"module_table_name": self.tablename,
-                "column_list": self.column_mappings_rated_lists['primary'],
+                "column_list": self.current_column_mappings_rated_lists['primary'],
                 "target_table_name": self.target_table}
 
 
